@@ -4,12 +4,15 @@
  * 使用 Google Gemini 图片生成 API 创建产品宣传图
  */
 
-import { GoogleGenAI } from '@google/genai';
-import { db } from '../db/index.js';
-import { promotionalImage, product, productImage, type GenerationTask, type Product } from '../db/schema.js';
-import { localStorage } from '../storage/local.js';
+import { db } from '../db';
+import { promotionalImage, product, productImage, type GenerationTask, type Product } from '../db/schema';
+import { localStorage } from '../storage/local';
 import { eq, inArray } from 'drizzle-orm';
-import { readFile, writeFile, mkdir } from 'fs/promises';
+import { writeFile, mkdir } from 'fs/promises';
+import { randomBytes } from 'crypto';
+import sharp from 'sharp';
+import { getGeminiClient } from './utils/apiClients';
+import { imagesToInlineData } from './utils/imageUtils';
 
 const IMAGE_MODEL = 'gemini-3-pro-image-preview';
 
@@ -23,17 +26,6 @@ export interface ImageGenerationResult {
 	height: number;
 	fileSize: number;
 	generatedText?: string;
-}
-
-/**
- * 初始化 Google Gemini 客户端
- */
-function getGeminiClient() {
-	const apiKey = process.env.GEMINI_API_KEY;
-	if (!apiKey) {
-		throw new Error('GEMINI_API_KEY environment variable is not set');
-	}
-	return new GoogleGenAI({ apiKey });
 }
 
 /**
@@ -51,27 +43,8 @@ async function getProductImageFiles(imageIds: string[]): Promise<Array<{ inlineD
 		}
 	});
 
-	const imageFiles = await Promise.all(
-		images.map(async (img) => {
-			const fullPath = localStorage.getFullPath(img.path);
-			const buffer = await readFile(fullPath);
-			
-			const ext = img.path.split('.').pop()?.toLowerCase();
-			const mimeType = ext === 'png' ? 'image/png' :
-			                 ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' :
-			                 ext === 'webp' ? 'image/webp' :
-			                 'image/jpeg';
-			
-			return {
-				inlineData: {
-					mimeType,
-					data: buffer.toString('base64')
-				}
-			};
-		})
-	);
-
-	return imageFiles;
+	const imagePaths = images.map(img => img.path);
+	return await imagesToInlineData(imagePaths);
 }
 
 /**
@@ -174,29 +147,34 @@ async function generateImagePrompt(
  */
 async function saveGeneratedImage(
 	taskId: string,
-	imageBuffer: Buffer,
-	index: number
+	imageBuffer: Buffer
 ): Promise<{ path: string; width: number; height: number; fileSize: number }> {
 	// 创建存储目录
 	const taskDir = `promotional/${taskId}`;
 	const fullDir = localStorage.getFullPath(taskDir);
 	await mkdir(fullDir, { recursive: true });
 
-	// 生成文件名
-	const filename = `image_${index + 1}.png`;
+	// 生成随机文件名（使用时间戳+随机字符串）
+	const timestamp = Date.now();
+	const randomStr = randomBytes(8).toString('hex');
+	const filename = `image_${timestamp}_${randomStr}.png`;
 	const imagePath = `${taskDir}/${filename}`;
 	const fullPath = localStorage.getFullPath(imagePath);
 
 	// 保存图片
 	await writeFile(fullPath, imageBuffer);
 
-	// 获取图片信息
-	const fileSize = imageBuffer.length;
+	// 获取图片实际尺寸
+	const metadata = await sharp(imageBuffer).metadata();
+	const width = metadata.width;
+	const height = metadata.height;
 	
-	// TODO: 实际获取图片尺寸（需要图片处理库）
-	// 暂时使用固定值，基于 1:1 比例
-	const width = 1024;
-	const height = 1024;
+	// 确保必填字段存在
+	if (!width || !height) {
+		throw new Error('Failed to get image dimensions from metadata');
+	}
+	
+	const fileSize = imageBuffer.length;
 
 	return {
 		path: imagePath,
@@ -223,7 +201,7 @@ async function generateSingleImage(
 		console.log(`📝 Generated prompt for image ${index + 1}:`, prompt);
 
 		// 获取产品参考图片
-		const productImages = await getProductImageFiles(task.productImageIds || []);
+		const productImages = await getProductImageFiles(task.productImageId ? [task.productImageId] : []);
 		console.log(`📷 Loaded ${productImages.length} product reference images`);
 
 		// 构建 contents（包含提示词和产品图片）
@@ -285,7 +263,7 @@ async function generateSingleImage(
 		}
 
 		// 保存图片到本地
-		const savedImage = await saveGeneratedImage(task.id, imageBuffer, index);
+		const savedImage = await saveGeneratedImage(task.id, imageBuffer);
 		console.log(`💾 Saved image ${index + 1} to:`, savedImage.path);
 
 		const generationTime = Date.now() - startTime;
@@ -297,7 +275,7 @@ async function generateSingleImage(
 				taskId: task.id,
 				imagePrompt: prompt,
 				generatedText,
-				productReferenceImages: task.productImageIds || [],
+				productReferenceImages: task.productImageId ? [task.productImageId] : [],
 				path: savedImage.path,
 				storageType: 'local',
 				width: savedImage.width,
@@ -337,13 +315,15 @@ export async function generatePromotionalImages(
 		count: task.count,
 		aspectRatio: task.aspectRatio,
 		language: task.language,
-		productImages: task.productImageIds?.length || 0
+		productImageId: task.productImageId
 	});
 
-	// 获取产品信息（必须存在）
-	const existingProduct = await db.query.product.findFirst({
-		where: eq(product.taskId, task.id)
-	});
+	// 获取产品信息（通过产品图片ID查找，product 与 productImage 是 1:1 关系）
+	const existingProduct = task.productImageId
+		? await db.query.product.findFirst({
+			where: eq(product.productImageId, task.productImageId)
+		})
+		: null;
 
 	if (!existingProduct) {
 		throw new Error('Product information not found for task');

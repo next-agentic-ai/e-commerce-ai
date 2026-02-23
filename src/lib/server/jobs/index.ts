@@ -5,6 +5,6 @@
  */
 
 export { getPgBoss, startPgBoss, stopPgBoss, ensurePgBossStarted } from './pgBoss';
-export { registerJobHandlers, sendUgcVideoWorkflowJob, sendImageGenerationWorkflowJob } from './registry';
+export { registerJobHandlers, sendImageGenerationWorkflowJob, sendAdVideoWorkflowJob } from './registry';
 export { JOB_NAMES } from './types';
-export type { UgcVideoWorkflowJobData, PollVideoStatusJobData, ImageGenerationWorkflowJobData } from './types';
+export type { ImageGenerationWorkflowJobData, AdVideoWorkflowJobData } from './types';

@@ -25,14 +25,12 @@ export const session = pgTable('session', {
 // 内容生成相关枚举
 // ============================================================
 
-export const taskTypeEnum = pgEnum('task_type', ['video', 'image']);
-export const generationModeEnum = pgEnum('generation_mode', ['from_scratch', 'from_reference']);
-export const taskStatusEnum = pgEnum('task_status', ['pending', 'analyzing', 'scripting', 'storyboarding', 'generating_frames', 'generating_videos', 'generating_images', 'compositing', 'completed', 'failed', 'cancelled']);
+export const taskTypeEnum = pgEnum('task_type', ['image', 'ad_video']);
+export const taskStatusEnum = pgEnum('task_status', ['pending', 'analyzing', 'scripting', 'storyboarding', 'generating_frames', 'generating_images', 'generating_videos', 'compositing', 'completed', 'failed', 'cancelled']);
 export const aspectRatioEnum = pgEnum('aspect_ratio', ['9:16', '16:9', '1:1', '4:5']);
 export const languageEnum = pgEnum('language', ['zh', 'en', 'es', 'hi', 'ar', 'pt', 'ru', 'ja']);
 export const storageTypeEnum = pgEnum('storage_type', ['local', 'supabase', 's3', 'cloudflare', 'cdn']);
 export const providerEnum = pgEnum('provider', ['google', 'openai', 'anthropic', 'runway', 'pika', 'luma', 'stability', 'bytedance']);
-export const frameTypeEnum = pgEnum('frame_type', ['first', 'key', 'last', 'middle']);
 export const aiTaskStatusEnum = pgEnum('ai_task_status', ['queued', 'running', 'cancelled', 'succeeded', 'failed', 'expired']);
 
 // ============================================================
@@ -43,9 +41,10 @@ export const product = pgTable(
 	'product',
 	{
 		id: uuid('id').primaryKey().defaultRandom(),
-		taskId: uuid('task_id')
+		productImageId: uuid('product_image_id')
 			.notNull()
-			.references(() => generationTask.id, { onDelete: 'cascade' }),
+			.unique()
+			.references(() => productImage.id, { onDelete: 'cascade' }),
 		name: text('name').notNull(),
 		description: text('description'),
 		category: text('category'), // 产品类别
@@ -97,7 +96,7 @@ export const product = pgTable(
 		updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
 	},
 	(table) => [
-		index('idx_product_task_id').on(table.taskId)
+		index('idx_product_product_image_id').on(table.productImageId)
 	]
 );
 
@@ -139,20 +138,17 @@ export const generationTask = pgTable(
 			.references(() => user.id, { onDelete: 'cascade' }),
 		
 		// 任务类型
-		taskType: taskTypeEnum('task_type').notNull(), // video 或 image
+		taskType: taskTypeEnum('task_type').notNull(), // image 或 ad_video
 		
-		// 输入：用户上传的产品图片
-		productImageIds: jsonb('product_image_ids').$type<string[]>().notNull(), // 用于分析的产品图片ID列表
-		
-		// 生成模式（主要用于视频）
-		generationMode: generationModeEnum('generation_mode').notNull().default('from_scratch'),
-		referenceVideoUrl: text('reference_video_url'), // 模式B使用（视频生成）
-		
+		// 输入：用户上传的产品图片（只支持一张）
+		productImageId: uuid('product_image_id')
+			.notNull()
+			.references(() => productImage.id, { onDelete: 'cascade' }),
+			
 		// 生成参数
-		targetDuration: integer('target_duration'), // 秒（视频生成使用）
 		aspectRatio: aspectRatioEnum('aspect_ratio').notNull().default('9:16'),
-		language: languageEnum('language').notNull().default('zh'), // 语言（视频配音语言/图片文案语言）
-		count: integer('count').notNull().default(1), // 生成数量（视频或图片）
+		language: languageEnum('language').notNull().default('zh'), // 语言（图片文案语言）
+		count: integer('count').notNull().default(1), // 生成数量
 		
 		// 任务状态
 		status: taskStatusEnum('status').notNull().default('pending'),
@@ -173,250 +169,6 @@ export const generationTask = pgTable(
 
 // ============================================================
 // UGC脚本表
-// ============================================================
-
-export const ugcScript = pgTable(
-	'ugc_script',
-	{
-		id: uuid('id').primaryKey().defaultRandom(),
-		taskId: uuid('task_id')
-			.notNull()
-			.references(() => generationTask.id, { onDelete: 'cascade' }),
-		
-		title: text('title').notNull(),
-		hook: text('hook'), // 前3秒钩子
-		storyline: text('storyline').notNull(),
-		
-		// 角色设计
-		character: jsonb('character').$type<{
-			name: string;
-			age: string;
-			occupation: string;
-			personality: string;
-			emotionalArc: string;
-		}>(),
-		
-		// 关键场景列表（简化版）
-		keyScenes: jsonb('key_scenes').$type<string[]>().notNull(), // 场景描述列表
-		
-		// 生成信息
-		provider: providerEnum('provider'), // google, bytedance, runway, etc.
-		model: text('model'), // 具体模型名称
-		usageMetadata: jsonb('usage_metadata'), // 使用统计（不同provider返回的字段可能不同）
-		
-		createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
-	},
-	(table) => [
-		index('idx_ugc_script_task_id').on(table.taskId)
-	]
-);
-
-// ============================================================
-// 分镜表
-// ============================================================
-
-export const shotBreakdown = pgTable(
-	'shot_breakdown',
-	{
-		id: uuid('id').primaryKey().defaultRandom(),
-		scriptId: uuid('script_id')
-			.notNull()
-			.references(() => ugcScript.id, { onDelete: 'cascade' }),
-		
-		shotNumber: integer('shot_number').notNull(),
-		title: text('title'), // 镜头标题（3-5字）
-		sceneReference: integer('scene_reference'), // 对应的场景编号
-		
-		// 镜头设计
-		duration: integer('duration').notNull(), // 秒 (根据场景需要灵活设置)
-		shotType: text('shot_type').notNull(), // Wide shot, Medium shot, Close-up, POV
-		cameraAngle: text('camera_angle'),
-		cameraMovement: text('camera_movement'), // static, pan, tilt, tracking
-		
-		// 详细场景描述（用于AI生成）
-		timeDescription: text('time_description'), // 时间与光线描述
-		locationDescription: text('location_description'), // 地点与环境描述
-		action: text('action'), // 人物动作描述
-		result: text('result'), // 画面结果描述
-		atmosphere: text('atmosphere'), // 环境氛围描述
-		
-		// 产品与视觉
-		productAppearance: text('product_appearance'),
-		lighting: text('lighting'),
-		mood: text('mood'),
-		
-		requiresProductInFrame: integer('requires_product_in_frame').notNull().default(0), // boolean: 0 or 1
-		
-		// 生成信息
-		provider: providerEnum('provider'), // google, openai, anthropic, etc.
-		model: text('model'), // 具体模型名称
-		usageMetadata: jsonb('usage_metadata'), // 使用统计（不同provider返回的字段可能不同）
-		
-		createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
-	},
-	(table) => [
-		index('idx_shot_breakdown_script_id').on(table.scriptId)
-	]
-);
-
-// ============================================================
-// 关键帧图片表
-// ============================================================
-
-export const keyFrameImage = pgTable(
-	'key_frame_image',
-	{
-		id: uuid('id').primaryKey().defaultRandom(),
-		shotId: uuid('shot_id')
-			.notNull()
-			.references(() => shotBreakdown.id, { onDelete: 'cascade' }),
-		
-		// 帧类型
-		frameType: frameTypeEnum('frame_type').notNull().default('first'), // first, key, last, middle
-		
-		// 图片生成提示词
-		imagePrompt: text('image_prompt').notNull(),
-		includeProduct: integer('include_product').notNull().default(0), // boolean: 0 or 1
-		productReferenceImages: jsonb('product_reference_images').$type<string[]>(), // 产品参考图片ID列表
-		styleKeywords: jsonb('style_keywords').$type<string[]>(),
-		
-		// 生成的图片（本地存储）
-		path: text('path'), // 逻辑路径：'keyframes/shot_123/first_frame.png'
-		storageType: storageTypeEnum('storage_type').default('local'),
-		width: integer('width'),
-		height: integer('height'),
-		fileSize: integer('file_size'), // bytes
-		
-		// 生成信息
-		provider: providerEnum('provider'), // google, openai, bytedance, etc.
-		model: text('model'), // 具体模型名称
-		usageMetadata: jsonb('usage_metadata'), // 使用统计（不同provider返回的字段可能不同）
-		generationTime: integer('generation_time'), // 毫秒
-		
-		createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
-	},
-	(table) => [
-		index('idx_key_frame_image_shot_id').on(table.shotId)
-	]
-);
-
-// ============================================================
-// 视频片段表（可代表单个或多个分镜）
-// ============================================================
-
-export const videoClip = pgTable(
-	'video_clip',
-	{
-		id: uuid('id').primaryKey().defaultRandom(),
-		taskId: uuid('task_id')
-			.notNull()
-			.references(() => generationTask.id, { onDelete: 'cascade' }),
-		scriptId: uuid('script_id')
-			.notNull()
-			.references(() => ugcScript.id, { onDelete: 'cascade' }),
-		
-		// 关联的分镜（支持单个或多个）
-		shotIds: jsonb('shot_ids').$type<string[]>().notNull(), // 包含的分镜ID列表
-		
-		// 图片使用（可同时使用多种方式，支持生成的或用户上传的图片）
-		firstFrameImage: jsonb('first_frame_image').$type<{
-			id: string;
-			source: 'generated' | 'uploaded'; // generated: keyFrameImage, uploaded: productImage
-		}>(), // 作为首帧的图片
-		
-		lastFrameImage: jsonb('last_frame_image').$type<{
-			id: string;
-			source: 'generated' | 'uploaded';
-		}>(), // 作为末帧的图片
-		
-		referenceImages: jsonb('reference_images').$type<Array<{
-			id: string;
-			source: 'generated' | 'uploaded';
-		}>>(), // 作为参考的图片（可多张）
-		
-		// 视频文件
-		sourceVideoUrl: text('source_video_url'), // AI供应商返回的临时URL（有时效性）
-		path: text('path'), // 本地存储路径：'videos/task_123/clip_1.mp4'
-		storageType: storageTypeEnum('storage_type').default('local'), // 存储类型
-		duration: integer('duration').notNull(), // 秒（可能是单个shot或多个shots的总和）
-		width: integer('width'),
-		height: integer('height'),
-		fileSize: integer('file_size'), // bytes
-		
-		// AI 任务状态（火山引擎等AI服务商的任务状态）
-		status: aiTaskStatusEnum('status').notNull().default('queued'), // queued, running, cancelled, succeeded, failed, expired
-		
-		// 本地转存状态（从AI服务商URL下载到本地存储）
-		downloadStatus: text('download_status'), // pending, downloading, completed, failed
-		downloadedAt: timestamp('downloaded_at', { withTimezone: true, mode: 'date' }), // 转存完成时间
-		
-		// 分镜时间映射（用于多分镜场景）
-		shotTimings: jsonb('shot_timings').$type<Array<{
-			shotId: string;
-			startTime: number; // 在视频中的起始时间（秒）
-			endTime: number;   // 在视频中的结束时间（秒）
-		}>>(), // 记录每个shot在视频中的时间位置
-		
-		// 生成信息
-		provider: providerEnum('provider'), // google, runway, pika, bytedance, etc.
-		model: text('model'), // 具体模型名称
-		usageMetadata: jsonb('usage_metadata'), // 使用统计（不同provider返回的字段可能不同）
-		generationTime: integer('generation_time'), // 毫秒
-		
-		// AI生成相关
-		operationId: text('operation_id'), // 供应商的操作ID（用于追踪和查询状态）
-		aiPrompt: text('ai_prompt'), // 生成视频使用的提示词
-		
-		createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
-	},
-	(table) => [
-		index('idx_video_clip_task_id').on(table.taskId),
-		index('idx_video_clip_script_id').on(table.scriptId)
-	]
-);
-
-// ============================================================
-// 最终视频表
-// ============================================================
-
-export const finalVideo = pgTable(
-	'final_video',
-	{
-		id: uuid('id').primaryKey().defaultRandom(),
-		taskId: uuid('task_id')
-			.notNull()
-			.references(() => generationTask.id, { onDelete: 'cascade' }),
-		scriptId: uuid('script_id')
-			.notNull()
-			.references(() => ugcScript.id, { onDelete: 'cascade' }),
-		
-		// 视频文件
-		videoUrl: text('video_url').notNull(),
-		thumbnailUrl: text('thumbnail_url'),
-		duration: integer('duration').notNull(),
-		width: integer('width').notNull(),
-		height: integer('height').notNull(),
-		fileSize: integer('file_size'),
-		
-		// 视频组成
-		clipCount: integer('clip_count').notNull(),
-		clipIds: jsonb('clip_ids').$type<string[]>().notNull(), // 包含的视频片段ID列表
-		
-		// 后期处理
-		hasAudio: integer('has_audio').default(0), // boolean: 0 or 1
-		audioUrl: text('audio_url'), // 背景音乐URL
-		
-		// 统计信息
-		totalGenerationTime: integer('total_generation_time'), // 毫秒
-		
-		createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
-	},
-	(table) => [
-		index('idx_final_video_task_id').on(table.taskId),
-		index('idx_final_video_script_id').on(table.scriptId)
-	]
-);
-
 // ============================================================
 // 宣传图表
 // ============================================================
@@ -458,55 +210,249 @@ export const promotionalImage = pgTable(
 );
 
 // ============================================================
-// 参考视频表（模式B使用）
+// 广告文案表（ad_video workflow）
 // ============================================================
 
-export const referenceVideo = pgTable(
-	'reference_video',
+export const adCopy = pgTable(
+	'ad_copy',
 	{
 		id: uuid('id').primaryKey().defaultRandom(),
-		userId: text('user_id')
+		productImageId: uuid('product_image_id')
 			.notNull()
-			.references(() => user.id),
-		name: text('name').notNull(),
-		path: text('path').notNull(), // 逻辑路径：'videos/user_123/ref.mp4'
-		storageType: storageTypeEnum('storage_type').notNull().default('local'),
-		duration: integer('duration'),
+			.unique()
+			.references(() => productImage.id, { onDelete: 'cascade' }),
 		
-		// 视频分析结果
-		analysisResult: jsonb('analysis_result').$type<{
-			shotCount: number;
-			shots: Array<{
-				shotNumber: number;
-				startTime: number;
-				endTime: number;
-				shotType: string;
-				mainSubject: string;
-				action: string;
-				environment: string;
-				style: string;
-				audioDescription?: string;
-			}>;
-			overallStyle: {
-				visualStyle: string;
-				mood: string;
-				pacing: string;
-				colorGrading: string;
-			};
-			originalProduct?: {
-				description: string;
-				appearances: number[]; // 出现在哪些镜头
-			};
-		}>(),
+		// 广告文案结构
+		style: text('style').notNull(), // 文案风格，如"对比反差型"
+		title: text('title').notNull(), // 广告标题
+		body: text('body').notNull(), // 广告正文
+		cta: text('cta').notNull(), // CTA结尾
 		
-		// 使用统计
-		usageCount: integer('usage_count').notNull().default(0),
+		// 完整文案文本
+		fullText: text('full_text').notNull(),
 		
-		createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
-		updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
+		// 生成信息
+		provider: providerEnum('provider'),
+		model: text('model'),
+		usageMetadata: jsonb('usage_metadata'),
+		
+		createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
 	},
 	(table) => [
-		index('idx_reference_video_user_id').on(table.userId)
+		index('idx_ad_copy_product_image_id').on(table.productImageId)
+	]
+);
+
+// ============================================================
+// 广告分镜表（ad_video workflow - 4个画面描述）
+// ============================================================
+
+export const adStoryboard = pgTable(
+	'ad_storyboard',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		taskId: uuid('task_id')
+			.notNull()
+			.references(() => generationTask.id, { onDelete: 'cascade' }),
+		adCopyId: uuid('ad_copy_id')
+			.notNull()
+			.references(() => adCopy.id, { onDelete: 'cascade' }),
+		
+		// 4个画面描述
+		scenes: jsonb('scenes').$type<Array<{
+			sceneNumber: number;
+			title: string; // 画面标题，如"问题出现（环境挑战）"
+			duration: number; // 画面时长（秒），2-4秒
+			narration: string | null; // 字幕/旁白（可选，没有旁白时为null）
+			imagePrompt: string; // 首帧图生成prompt（中文），只描述场景画面
+			videoPrompt: string; // 视频生成prompt（中文），描述主体动作 + 镜头语言 + 运镜
+		}>>().notNull(),
+		
+		// 生成信息
+		provider: providerEnum('provider'),
+		model: text('model'),
+		usageMetadata: jsonb('usage_metadata'),
+		
+		createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
+	},
+	(table) => [
+		index('idx_ad_storyboard_task_id').on(table.taskId)
+	]
+);
+
+// ============================================================
+// 广告分镜图片表（ad_video workflow - 2x2网格图 + 切分图）
+// ============================================================
+
+export const adStoryboardImage = pgTable(
+	'ad_storyboard_image',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		taskId: uuid('task_id')
+			.notNull()
+			.references(() => generationTask.id, { onDelete: 'cascade' }),
+		storyboardId: uuid('storyboard_id')
+			.notNull()
+			.references(() => adStoryboard.id, { onDelete: 'cascade' }),
+		
+		// 图片类型
+		imageType: text('image_type').notNull(), // 'grid' | 'frame_1' ~ 'frame_4'
+		sceneNumber: integer('scene_number'), // 1-4 for individual frames, null for grid
+		
+		// 图片文件
+		path: text('path').notNull(),
+		storageType: storageTypeEnum('storage_type').notNull().default('local'),
+		width: integer('width').notNull(),
+		height: integer('height').notNull(),
+		fileSize: integer('file_size').notNull(),
+		
+		// 生成信息
+		provider: providerEnum('provider'),
+		model: text('model'),
+		usageMetadata: jsonb('usage_metadata'),
+		generationTime: integer('generation_time'),
+		
+		createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
+	},
+	(table) => [
+		index('idx_ad_storyboard_image_task_id').on(table.taskId),
+		index('idx_ad_storyboard_image_storyboard_id').on(table.storyboardId)
+	]
+);
+
+// ============================================================
+// 广告视频片段表（ad_video workflow - 4个视频，每个场景一个）
+// ============================================================
+
+export const adVideoClip = pgTable(
+	'ad_video_clip',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		taskId: uuid('task_id')
+			.notNull()
+			.references(() => generationTask.id, { onDelete: 'cascade' }),
+		storyboardId: uuid('storyboard_id')
+			.notNull()
+			.references(() => adStoryboard.id, { onDelete: 'cascade' }),
+		
+		// 视频序号（1-6）
+		clipNumber: integer('clip_number').notNull(),
+		
+		// 首尾帧图片
+		firstFrameImageId: uuid('first_frame_image_id')
+			.references(() => adStoryboardImage.id),
+		lastFrameImageId: uuid('last_frame_image_id')
+			.references(() => adStoryboardImage.id),
+		
+		// 视频文件
+		sourceVideoUrl: text('source_video_url'),
+		path: text('path'),
+		storageType: storageTypeEnum('storage_type').default('local'),
+		duration: integer('duration'), // 秒
+		width: integer('width'),
+		height: integer('height'),
+		fileSize: integer('file_size'),
+		
+		// AI 任务状态
+		status: aiTaskStatusEnum('status').notNull().default('queued'),
+		downloadStatus: text('download_status'),
+		downloadedAt: timestamp('downloaded_at', { withTimezone: true, mode: 'date' }),
+		
+		// 生成信息
+		provider: providerEnum('provider'),
+		model: text('model'),
+		operationId: text('operation_id'),
+		aiPrompt: text('ai_prompt'),
+		usageMetadata: jsonb('usage_metadata'),
+		generationTime: integer('generation_time'),
+		
+		createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
+	},
+	(table) => [
+		index('idx_ad_video_clip_task_id').on(table.taskId),
+		index('idx_ad_video_clip_storyboard_id').on(table.storyboardId)
+	]
+);
+
+// ============================================================
+// 广告音频表（ad_video workflow - TTS音频）
+// ============================================================
+
+export const adAudio = pgTable(
+	'ad_audio',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		taskId: uuid('task_id')
+			.notNull()
+			.references(() => generationTask.id, { onDelete: 'cascade' }),
+		storyboardId: uuid('storyboard_id')
+			.notNull()
+			.references(() => adStoryboard.id, { onDelete: 'cascade' }),
+		
+		// 音频类型
+		audioType: text('audio_type').notNull(), // 'full' | 'segment_1' ~ 'segment_6'
+		segmentNumber: integer('segment_number'), // 1-6 for segments, null for full
+		
+		// 原始文本
+		text: text('text').notNull(),
+		
+		// 音频文件
+		path: text('path').notNull(),
+		storageType: storageTypeEnum('storage_type').notNull().default('local'),
+		duration: real('duration'), // 毫秒
+		fileSize: integer('file_size'),
+		
+		// TTS时间戳信息
+		wordTimestamps: jsonb('word_timestamps').$type<Array<{
+			word: string;
+			startTime: number;
+			endTime: number;
+		}>>(),
+		
+		// 是否经过加速处理
+		isSpeedAdjusted: integer('is_speed_adjusted').notNull().default(0), // boolean: 0 or 1
+		speedRatio: real('speed_ratio'), // 加速比例
+		
+		createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
+	},
+	(table) => [
+		index('idx_ad_audio_task_id').on(table.taskId),
+		index('idx_ad_audio_storyboard_id').on(table.storyboardId)
+	]
+);
+
+// ============================================================
+// 广告最终视频表（ad_video workflow - 合成视频）
+// ============================================================
+
+export const adFinalVideo = pgTable(
+	'ad_final_video',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		taskId: uuid('task_id')
+			.notNull()
+			.references(() => generationTask.id, { onDelete: 'cascade' }),
+		
+		// 视频文件
+		path: text('path').notNull(),
+		storageType: storageTypeEnum('storage_type').notNull().default('local'),
+		duration: integer('duration').notNull(), // 秒
+		width: integer('width').notNull(),
+		height: integer('height').notNull(),
+		fileSize: integer('file_size').notNull(),
+		
+		// 组成信息
+		clipCount: integer('clip_count').notNull(),
+		clipIds: jsonb('clip_ids').$type<string[]>().notNull(),
+		audioIds: jsonb('audio_ids').$type<string[]>(),
+		
+		// 统计信息
+		totalGenerationTime: integer('total_generation_time'),
+		
+		createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
+	},
+	(table) => [
+		index('idx_ad_final_video_task_id').on(table.taskId)
 	]
 );
 
@@ -539,24 +485,25 @@ export type User = typeof user.$inferSelect;
 export type Product = typeof product.$inferSelect;
 export type ProductImage = typeof productImage.$inferSelect;
 export type GenerationTask = typeof generationTask.$inferSelect;
-export type UgcScript = typeof ugcScript.$inferSelect;
-export type ShotBreakdown = typeof shotBreakdown.$inferSelect;
-export type KeyFrameImage = typeof keyFrameImage.$inferSelect;
-export type VideoClip = typeof videoClip.$inferSelect;
-export type FinalVideo = typeof finalVideo.$inferSelect;
 export type PromotionalImage = typeof promotionalImage.$inferSelect;
-export type ReferenceVideo = typeof referenceVideo.$inferSelect;
 export type TaskLog = typeof taskLog.$inferSelect;
+
+export type AdCopy = typeof adCopy.$inferSelect;
+export type AdStoryboard = typeof adStoryboard.$inferSelect;
+export type AdStoryboardImage = typeof adStoryboardImage.$inferSelect;
+export type AdVideoClip = typeof adVideoClip.$inferSelect;
+export type AdAudio = typeof adAudio.$inferSelect;
+export type AdFinalVideo = typeof adFinalVideo.$inferSelect;
 
 // Insert类型（用于创建新记录）
 export type NewProduct = typeof product.$inferInsert;
 export type NewProductImage = typeof productImage.$inferInsert;
 export type NewGenerationTask = typeof generationTask.$inferInsert;
-export type NewUgcScript = typeof ugcScript.$inferInsert;
-export type NewShotBreakdown = typeof shotBreakdown.$inferInsert;
-export type NewKeyFrameImage = typeof keyFrameImage.$inferInsert;
-export type NewVideoClip = typeof videoClip.$inferInsert;
-export type NewFinalVideo = typeof finalVideo.$inferInsert;
 export type NewPromotionalImage = typeof promotionalImage.$inferInsert;
-export type NewReferenceVideo = typeof referenceVideo.$inferInsert;
 export type NewTaskLog = typeof taskLog.$inferInsert;
+export type NewAdCopy = typeof adCopy.$inferInsert;
+export type NewAdStoryboard = typeof adStoryboard.$inferInsert;
+export type NewAdStoryboardImage = typeof adStoryboardImage.$inferInsert;
+export type NewAdVideoClip = typeof adVideoClip.$inferInsert;
+export type NewAdAudio = typeof adAudio.$inferInsert;
+export type NewAdFinalVideo = typeof adFinalVideo.$inferInsert;

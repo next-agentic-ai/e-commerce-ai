@@ -1,56 +1,39 @@
 // src/lib/server/services/ugcTask.ts
 /**
  * 内容生成任务管理服务
- * 负责任务的创建、查询、更新等操作（支持视频和图片生成）
+ * 负责任务的创建、查询、更新等操作（支持图片和广告视频生成）
  */
 
-import { db } from '../db/index.js';
-import { generationTask, videoClip, promotionalImage } from '../db/schema.js';
+import { db } from '../db';
+import { generationTask, promotionalImage, adFinalVideo } from '../db/schema';
 import { eq, desc, and, inArray } from 'drizzle-orm';
-import { sendUgcVideoWorkflowJob, sendImageGenerationWorkflowJob } from '../jobs/index.js';
-import type { GenerationTask } from '../db/schema.js';
-
-/**
- * 创建视频任务参数
- */
-export interface CreateVideoTaskParams {
-	userId: string;
-	productImageIds: string[];
-	targetDuration: number;
-	aspectRatio: '9:16' | '16:9' | '1:1' | '4:5';
-	language: 'zh' | 'en' | 'es' | 'hi' | 'ar' | 'pt' | 'ru' | 'ja';
-	videoCount?: number;
-	referenceVideoUrl?: string | null;
-}
+import { sendImageGenerationWorkflowJob, sendAdVideoWorkflowJob } from '../jobs/index';
+import type { GenerationTask } from '../db/schema';
 
 /**
  * 创建图片任务参数
  */
 export interface CreateImageTaskParams {
 	userId: string;
-	productImageIds: string[];
+	productImageId: string; // 只支持一张产品图片
 	aspectRatio: '1:1'; // 目前只支持 1:1
 	language: 'zh' | 'en' | 'es' | 'hi' | 'ar' | 'pt' | 'ru' | 'ja';
 	imageCount?: number;
 }
 
 /**
- * 统一创建任务参数
+ * 创建广告视频任务参数
  */
-export interface CreateTaskParams extends CreateVideoTaskParams {}
+export interface CreateAdVideoTaskParams {
+	userId: string;
+	productImageId: string; // 只支持一张产品图片
+	aspectRatio: '9:16' | '16:9';
+}
 
 /**
- * 任务详情（包含关联的视频片段或图片）
+ * 任务详情（包含关联的图片或广告视频）
  */
 export interface TaskDetail extends GenerationTask {
-	videos?: Array<{
-		id: string;
-		downloadStatus: string;
-		sourceVideoUrl: string | null;
-		duration: number | null;
-		width: number | null;
-		height: number | null;
-	}>;
 	images?: Array<{
 		id: string;
 		downloadStatus: string;
@@ -59,69 +42,13 @@ export interface TaskDetail extends GenerationTask {
 		width: number | null;
 		height: number | null;
 	}>;
-}
-
-/**
- * 创建视频生成任务（统一入口）
- */
-export async function createUgcTask(params: CreateTaskParams): Promise<{
-	task: GenerationTask;
-	jobId: string | null;
-}> {
-	return createVideoTask(params);
-}
-
-/**
- * 创建视频生成任务
- */
-export async function createVideoTask(params: CreateVideoTaskParams): Promise<{
-	task: GenerationTask;
-	jobId: string | null;
-}> {
-	const {
-		userId,
-		productImageIds,
-		targetDuration,
-		aspectRatio,
-		language,
-		videoCount = 1,
-		referenceVideoUrl = null
-	} = params;
-
-	// 1. 创建任务记录
-	const [task] = await db
-		.insert(generationTask)
-		.values({
-			userId,
-			taskType: 'video',
-			productImageIds,
-			generationMode: referenceVideoUrl ? 'from_reference' : 'from_scratch',
-			referenceVideoUrl,
-			targetDuration,
-			aspectRatio,
-			language,
-			count: videoCount,
-			status: 'pending'
-		})
-		.returning();
-
-	console.log(`✅ Created video task ${task.id}`);
-
-	// 2. 发送到任务队列
-	const jobId = await sendUgcVideoWorkflowJob(task.id, true);
-
-	// 3. 更新任务的 jobId
-	await db
-		.update(generationTask)
-		.set({ jobId })
-		.where(eq(generationTask.id, task.id));
-
-	console.log(`📤 Sent job ${jobId} for task ${task.id}`);
-
-	return { 
-		task: { ...task, jobId }, 
-		jobId 
-	};
+	adFinalVideos?: Array<{
+		id: string;
+		path: string;
+		duration: number;
+		width: number;
+		height: number;
+	}>;
 }
 
 /**
@@ -133,7 +60,7 @@ export async function createImageTask(params: CreateImageTaskParams): Promise<{
 }> {
 	const {
 		userId,
-		productImageIds,
+		productImageId,
 		aspectRatio,
 		language,
 		imageCount = 1
@@ -145,8 +72,7 @@ export async function createImageTask(params: CreateImageTaskParams): Promise<{
 		.values({
 			userId,
 			taskType: 'image',
-			productImageIds,
-			generationMode: 'from_scratch',
+			productImageId,
 			aspectRatio,
 			language,
 			count: imageCount,
@@ -174,12 +100,58 @@ export async function createImageTask(params: CreateImageTaskParams): Promise<{
 }
 
 /**
+ * 创建广告视频生成任务
+ */
+export async function createAdVideoTask(params: CreateAdVideoTaskParams): Promise<{
+	task: GenerationTask;
+	jobId: string | null;
+}> {
+	const {
+		userId,
+		productImageId,
+		aspectRatio
+	} = params;
+
+	// 1. 创建任务记录
+	const [task] = await db
+		.insert(generationTask)
+		.values({
+			userId,
+			taskType: 'ad_video',
+			productImageId,
+			aspectRatio,
+			language: 'zh', // 广告视频默认中文
+			count: 1,
+			status: 'pending'
+		})
+		.returning();
+
+	console.log(`✅ Created ad video task ${task.id}`);
+
+	// 2. 发送到广告视频任务队列
+	const jobId = await sendAdVideoWorkflowJob(task.id);
+
+	// 3. 更新任务的 jobId
+	await db
+		.update(generationTask)
+		.set({ jobId })
+		.where(eq(generationTask.id, task.id));
+
+	console.log(`📤 Sent ad video job ${jobId} for task ${task.id}`);
+
+	return {
+		task: { ...task, jobId },
+		jobId
+	};
+}
+
+/**
  * 获取用户的任务列表
  */
 export async function getUserTasks(
 	userId: string,
 	limit: number = 50,
-	taskType?: 'video' | 'image'
+	taskType?: 'image' | 'ad_video'
 ): Promise<TaskDetail[]> {
 	const whereConditions = taskType 
 		? and(eq(generationTask.userId, userId), eq(generationTask.taskType, taskType))
@@ -196,17 +168,11 @@ export async function getUserTasks(
 	}
 
 	// 批量获取关联数据
-	const videoTaskIds = tasks.filter(t => t.taskType === 'video').map(t => t.id);
 	const imageTaskIds = tasks.filter(t => t.taskType === 'image').map(t => t.id);
+	const adVideoTaskIds = tasks.filter(t => t.taskType === 'ad_video').map(t => t.id);
 
-	let allVideoClips: any[] = [];
 	let allPromotionalImages: any[] = [];
-
-	if (videoTaskIds.length > 0) {
-		allVideoClips = await db.query.videoClip.findMany({
-			where: inArray(videoClip.taskId, videoTaskIds)
-		});
-	}
+	let allAdFinalVideos: any[] = [];
 
 	if (imageTaskIds.length > 0) {
 		allPromotionalImages = await db.query.promotionalImage.findMany({
@@ -214,21 +180,17 @@ export async function getUserTasks(
 		});
 	}
 
+	if (adVideoTaskIds.length > 0) {
+		allAdFinalVideos = await db.query.adFinalVideo.findMany({
+			where: inArray(adFinalVideo.taskId, adVideoTaskIds)
+		});
+	}
+
 	// 组装数据
 	return tasks.map(task => {
 		const result: TaskDetail = { ...task };
 
-		if (task.taskType === 'video') {
-			const clips = allVideoClips.filter(c => c.taskId === task.id);
-			result.videos = clips.map(clip => ({
-				id: clip.id,
-				downloadStatus: clip.downloadStatus ?? 'pending',
-				sourceVideoUrl: clip.sourceVideoUrl,
-				duration: clip.duration ?? null,
-				width: clip.width,
-				height: clip.height
-			}));
-		} else if (task.taskType === 'image') {
+		if (task.taskType === 'image') {
 			const images = allPromotionalImages.filter(img => img.taskId === task.id);
 			result.images = images.map(img => ({
 				id: img.id,
@@ -237,6 +199,15 @@ export async function getUserTasks(
 				path: img.path,
 				width: img.width,
 				height: img.height
+			}));
+		} else if (task.taskType === 'ad_video') {
+			const finalVideos = allAdFinalVideos.filter(v => v.taskId === task.id);
+			result.adFinalVideos = finalVideos.map(v => ({
+				id: v.id,
+				path: v.path,
+				duration: v.duration,
+				width: v.width,
+				height: v.height
 			}));
 		}
 
@@ -256,7 +227,7 @@ export async function getTaskById(taskId: string): Promise<GenerationTask | null
 }
 
 /**
- * 获取任务详情（包含视频片段或图片）
+ * 获取任务详情（包含图片或广告视频）
  */
 export async function getTaskDetail(taskId: string): Promise<TaskDetail | null> {
 	const task = await db.query.generationTask.findFirst({
@@ -269,34 +240,30 @@ export async function getTaskDetail(taskId: string): Promise<TaskDetail | null> 
 
 	const result: TaskDetail = { ...task };
 
-	// 根据任务类型加载对应的资源
-	if (task.taskType === 'video') {
-		// 查询关联的视频片段
-		const clips = await db.query.videoClip.findMany({
-			where: eq(videoClip.taskId, taskId)
-		});
-
-		result.videos = clips.map(clip => ({
-			id: clip.id,
-			downloadStatus: clip.downloadStatus ?? 'pending',
-			sourceVideoUrl: clip.sourceVideoUrl,
-			duration: clip.duration ?? null,
-			width: clip.width,
-			height: clip.height
-		}));
-	} else if (task.taskType === 'image') {
-		// 查询关联的宣传图
+	if (task.taskType === 'image') {
 		const images = await db.query.promotionalImage.findMany({
 			where: eq(promotionalImage.taskId, taskId)
 		});
 
 		result.images = images.map(img => ({
 			id: img.id,
-			downloadStatus: 'completed', // 图片是同步生成的，直接标记为完成
-			sourceImageUrl: null, // 不需要临时URL，直接使用本地路径
+			downloadStatus: 'completed',
+			sourceImageUrl: null,
 			path: img.path,
 			width: img.width,
 			height: img.height
+		}));
+	} else if (task.taskType === 'ad_video') {
+		const finalVideos = await db.query.adFinalVideo.findMany({
+			where: eq(adFinalVideo.taskId, taskId)
+		});
+
+		result.adFinalVideos = finalVideos.map(v => ({
+			id: v.id,
+			path: v.path,
+			duration: v.duration,
+			width: v.width,
+			height: v.height
 		}));
 	}
 
@@ -308,12 +275,12 @@ export async function getTaskDetail(taskId: string): Promise<TaskDetail | null> 
  */
 export async function updateTaskStatus(
 	taskId: string,
-	status: 'pending' | 'analyzing' | 'scripting' | 'storyboarding' | 'generating_frames' | 'generating_videos' | 'generating_images' | 'compositing' | 'completed' | 'failed' | 'cancelled',
+	status: 'pending' | 'analyzing' | 'scripting' | 'storyboarding' | 'generating_frames' | 'generating_images' | 'generating_videos' | 'compositing' | 'completed' | 'failed' | 'cancelled',
 	errorMessage?: string | null
 ): Promise<void> {
 	const updateData: any = { status };
 
-	const processingStatuses = ['analyzing', 'scripting', 'storyboarding', 'generating_frames', 'generating_videos', 'generating_images', 'compositing'];
+	const processingStatuses = ['analyzing', 'scripting', 'storyboarding', 'generating_frames', 'generating_images', 'generating_videos', 'compositing'];
 	if (processingStatuses.includes(status) && !errorMessage) {
 		updateData.startedAt = new Date();
 	}
@@ -333,10 +300,9 @@ export async function updateTaskStatus(
 }
 
 /**
- * 删除任务（软删除或硬删除）
+ * 删除任务（硬删除）
  */
 export async function deleteTask(taskId: string, userId: string): Promise<boolean> {
-	// 验证任务属于该用户
 	const task = await db.query.generationTask.findFirst({
 		where: and(
 			eq(generationTask.id, taskId),
@@ -348,7 +314,6 @@ export async function deleteTask(taskId: string, userId: string): Promise<boolea
 		return false;
 	}
 
-	// 硬删除（也会级联删除相关的视频片段或图片）
 	await db.delete(generationTask).where(eq(generationTask.id, taskId));
 
 	return true;
@@ -357,7 +322,7 @@ export async function deleteTask(taskId: string, userId: string): Promise<boolea
 /**
  * 获取任务统计信息
  */
-export async function getTaskStats(userId: string, taskType?: 'video' | 'image'): Promise<{
+export async function getTaskStats(userId: string, taskType?: 'image' | 'ad_video'): Promise<{
 	total: number;
 	pending: number;
 	processing: number;
@@ -373,7 +338,7 @@ export async function getTaskStats(userId: string, taskType?: 'video' | 'image')
 		where: whereConditions
 	});
 
-	const processingStatuses = ['analyzing', 'scripting', 'storyboarding', 'generating_frames', 'generating_videos', 'generating_images', 'compositing'];
+	const processingStatuses = ['analyzing', 'scripting', 'storyboarding', 'generating_frames', 'generating_images', 'generating_videos', 'compositing'];
 
 	return {
 		total: tasks.length,
@@ -392,7 +357,6 @@ export async function retryTask(taskId: string, userId: string): Promise<{
 	task: GenerationTask;
 	jobId: string | null;
 } | null> {
-	// 验证任务属于该用户且状态为失败
 	const task = await db.query.generationTask.findFirst({
 		where: and(
 			eq(generationTask.id, taskId),
@@ -418,13 +382,12 @@ export async function retryTask(taskId: string, userId: string): Promise<{
 	// 根据任务类型重新发送到任务队列
 	let jobId: string | null = null;
 	
-	if (task.taskType === 'video') {
-		jobId = await sendUgcVideoWorkflowJob(taskId, true);
-	} else if (task.taskType === 'image') {
+	if (task.taskType === 'image') {
 		jobId = await sendImageGenerationWorkflowJob(taskId);
+	} else if (task.taskType === 'ad_video') {
+		jobId = await sendAdVideoWorkflowJob(taskId);
 	}
 
-	// 获取更新后的任务
 	const updatedTask = await getTaskById(taskId);
 
 	if (!updatedTask) {

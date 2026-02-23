@@ -1,7 +1,8 @@
 // src/routes/+page.server.ts
 import { fail } from '@sveltejs/kit';
 import { getUserProductImages, deleteProductImage, uploadProductImages } from '$lib/server/services/productImage';
-import { createUgcTask, createImageTask, getUserTasks } from '$lib/server/services/ugcTask';
+import { createImageTask, createAdVideoTask, getUserTasks } from '$lib/server/services/ugcTask';
+import { localStorage } from '$lib/server/storage/local';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, parent }) => {
@@ -35,7 +36,6 @@ export const actions = {
 
 		const formData = await request.formData();
 		const files = formData.getAll('images') as File[];
-		const imageMetadata = formData.get('imageMetadata') as string;
 
 		if (!files || files.length === 0) {
 			return fail(400, { error: '请至少上传一张图片' });
@@ -55,25 +55,8 @@ export const actions = {
 		}
 
 		try {
-			// 解析图片元数据（宽高信息）
-			let metadata: Array<{ width?: number; height?: number }> = [];
-			if (imageMetadata) {
-				try {
-					metadata = JSON.parse(imageMetadata);
-				} catch (e) {
-					console.warn('Failed to parse image metadata:', e);
-				}
-			}
-
-			// 准备文件数据
-			const filesWithMetadata = files.map((file, index) => ({
-				file,
-				width: metadata[index]?.width,
-				height: metadata[index]?.height
-			}));
-
-			// 上传图片
-			const uploadedImages = await uploadProductImages(locals.user.id, filesWithMetadata);
+			// 上传图片（会自动获取实际尺寸）
+			const uploadedImages = await uploadProductImages(locals.user.id, files);
 			
 			// 为每个图片添加 URL
 			const imagesWithUrl = uploadedImages.map((img) => ({
@@ -114,80 +97,6 @@ export const actions = {
 		}
 	},
 
-	generate: async ({ request, locals }) => {
-		if (!locals.user) {
-			return fail(401, { error: 'Unauthorized' });
-		}
-
-		const formData = await request.formData();
-		const imageIdsJson = formData.get('imageIds') as string;
-		const targetDuration = parseInt(formData.get('targetDuration') as string || '12');
-		const aspectRatio = (formData.get('aspectRatio') as string) || '9:16';
-		const language = (formData.get('language') as string) || 'zh';
-		const videoCount = parseInt(formData.get('videoCount') as string || '1');
-		const referenceVideoUrl = formData.get('referenceVideoUrl') as string | null;
-
-		// 验证产品图片
-		if (!imageIdsJson) {
-			return fail(400, { error: '请选择产品图片' });
-		}
-
-		try {
-			const imageIds = JSON.parse(imageIdsJson) as string[];
-			
-			// 验证图片数量
-			if (imageIds.length === 0) {
-				return fail(400, { error: '请至少选择一张图片' });
-			}
-
-			if (imageIds.length > 9) {
-				return fail(400, { error: '最多只能选择9张产品图片' });
-			}
-
-			// 验证视频尺寸
-			if (!['9:16', '16:9', '1:1', '4:5'].includes(aspectRatio)) {
-				return fail(400, { error: '无效的视频尺寸' });
-			}
-
-			// 验证视频时长
-			if (![12, 24].includes(targetDuration)) {
-				return fail(400, { error: '视频时长只能是12秒或24秒' });
-			}
-
-			// 验证语言
-			if (!['zh', 'en', 'es', 'hi', 'ar', 'pt', 'ru', 'ja'].includes(language)) {
-				return fail(400, { error: '不支持的语言' });
-			}
-
-			// 验证视频数量
-			if (videoCount < 1 || videoCount > 10) {
-				return fail(400, { error: '视频数量必须在1-10之间' });
-			}
-
-			// 使用任务服务创建任务
-			const { task, jobId } = await createUgcTask({
-				userId: locals.user.id,
-				productImageIds: imageIds,
-				targetDuration,
-				aspectRatio: aspectRatio as '9:16' | '16:9' | '1:1' | '4:5',
-				language: language as 'zh' | 'en' | 'es' | 'hi' | 'ar' | 'pt' | 'ru' | 'ja',
-				videoCount,
-				referenceVideoUrl
-			});
-
-			return {
-				success: true,
-				taskId: task.id,
-				jobId,
-				message: '视频生成任务已创建，正在后台处理'
-			};
-		} catch (error) {
-			console.error('Generate error:', error);
-			const errorMessage = error instanceof Error ? error.message : '创建任务失败，请重试';
-			return fail(500, { error: errorMessage });
-		}
-	},
-
 	generateImage: async ({ request, locals }) => {
 		if (!locals.user) {
 			return fail(401, { error: 'Unauthorized' });
@@ -207,14 +116,12 @@ export const actions = {
 		try {
 			const imageIds = JSON.parse(imageIdsJson) as string[];
 			
-			// 验证图片数量
+			// 验证图片（只支持一张）
 			if (imageIds.length === 0) {
-				return fail(400, { error: '请至少选择一张图片' });
+				return fail(400, { error: '请选择一张产品图片' });
 			}
 
-			if (imageIds.length > 9) {
-				return fail(400, { error: '最多只能选择9张产品图片' });
-			}
+			const productImageId = imageIds[0];
 
 			// 验证尺寸（目前只支持1:1）
 			if (aspectRatio !== '1:1') {
@@ -234,7 +141,7 @@ export const actions = {
 			// 使用任务服务创建图片生成任务
 			const { task, jobId } = await createImageTask({
 				userId: locals.user.id,
-				productImageIds: imageIds,
+				productImageId,
 				aspectRatio: aspectRatio as '1:1',
 				language: language as 'zh' | 'en' | 'es' | 'hi' | 'ar' | 'pt' | 'ru' | 'ja',
 				imageCount
@@ -248,6 +155,55 @@ export const actions = {
 			};
 		} catch (error) {
 			console.error('Generate image error:', error);
+			const errorMessage = error instanceof Error ? error.message : '创建任务失败，请重试';
+			return fail(500, { error: errorMessage });
+		}
+	},
+
+	generateAdVideo: async ({ request, locals }) => {
+		if (!locals.user) {
+			return fail(401, { error: 'Unauthorized' });
+		}
+
+		const formData = await request.formData();
+		const imageIdsJson = formData.get('imageIds') as string;
+		const aspectRatio = (formData.get('aspectRatio') as string) || '9:16';
+
+		// 验证产品图片
+		if (!imageIdsJson) {
+			return fail(400, { error: '请选择产品图片' });
+		}
+
+		try {
+			const imageIds = JSON.parse(imageIdsJson) as string[];
+			
+			// 广告视频只支持1张图片
+			if (imageIds.length === 0) {
+				return fail(400, { error: '请选择一张产品图片' });
+			}
+
+			const productImageId = imageIds[0];
+
+			// 验证尺寸
+			if (!['9:16', '16:9'].includes(aspectRatio)) {
+				return fail(400, { error: '无效的视频尺寸' });
+			}
+
+			// 创建广告视频任务
+			const { task, jobId } = await createAdVideoTask({
+				userId: locals.user.id,
+				productImageId,
+				aspectRatio: aspectRatio as '9:16' | '16:9'
+			});
+
+			return {
+				success: true,
+				taskId: task.id,
+				jobId,
+				message: '广告视频生成任务已创建，正在后台处理'
+			};
+		} catch (error) {
+			console.error('Generate ad video error:', error);
 			const errorMessage = error instanceof Error ? error.message : '创建任务失败，请重试';
 			return fail(500, { error: errorMessage });
 		}

@@ -1,15 +1,14 @@
 // src/lib/server/services/productImage.ts
-import { db } from '../db/index.js';
-import { productImage } from '../db/schema.js';
-import { localStorage } from '../storage/local.js';
-import { eq } from 'drizzle-orm';
+import { db } from '../db';
+import { productImage } from '../db/schema';
+import { localStorage } from '../storage/local';
+import { eq, ilike, and, desc } from 'drizzle-orm';
+import sharp from 'sharp';
 
 export interface UploadProductImageOptions {
 	userId: string;
 	file: File;
 	imageType?: string; // front, side, back, use_case, detail, etc.
-	width?: number;
-	height?: number;
 }
 
 /**
@@ -26,10 +25,19 @@ function generateFilePath(userId: string, fileName: string): string {
  * 上传产品图片
  */
 export async function uploadProductImage(options: UploadProductImageOptions) {
-	const { userId, file, imageType, width, height } = options;
+	const { userId, file, imageType } = options;
 
 	// 读取文件
 	const buffer = Buffer.from(await file.arrayBuffer());
+
+	// 获取图片实际尺寸
+	const metadata = await sharp(buffer).metadata();
+	const width = metadata.width;
+	const height = metadata.height;
+
+	if (!width || !height) {
+		throw new Error('Failed to get image dimensions');
+	}
 
 	// 生成存储路径
 	const path = generateFilePath(userId, file.name);
@@ -60,16 +68,14 @@ export async function uploadProductImage(options: UploadProductImageOptions) {
  */
 export async function uploadProductImages(
 	userId: string,
-	files: { file: File; width?: number; height?: number }[],
+	files: File[],
 	imageTypes?: string[]
 ) {
-	const uploadPromises = files.map((item, index) =>
+	const uploadPromises = files.map((file, index) =>
 		uploadProductImage({
 			userId,
-			file: item.file,
-			imageType: imageTypes?.[index],
-			width: item.width,
-			height: item.height
+			file,
+			imageType: imageTypes?.[index]
 		})
 	);
 
@@ -108,8 +114,6 @@ export async function deleteProductImage(imageId: string, userId: string) {
  * 获取用户的所有产品图片
  */
 export async function getUserProductImages(userId: string, searchQuery?: string) {
-	const { ilike, and } = await import('drizzle-orm');
-	
 	// 构建查询条件
 	const conditions = [eq(productImage.userId, userId)];
 	
@@ -122,7 +126,7 @@ export async function getUserProductImages(userId: string, searchQuery?: string)
 		.select()
 		.from(productImage)
 		.where(and(...conditions))
-		.orderBy(productImage.createdAt);
+		.orderBy(desc(productImage.createdAt));
 
 	return images.map((img) => ({
 		...img,

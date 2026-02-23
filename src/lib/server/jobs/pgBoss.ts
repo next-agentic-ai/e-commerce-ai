@@ -61,9 +61,8 @@ export async function ensurePgBossStarted(): Promise<void> {
 		await boss.start();
 		
 		// 创建队列（如果不存在）
-		await boss.createQueue(JOB_NAMES.UGC_VIDEO_WORKFLOW);
-		await boss.createQueue(JOB_NAMES.POLL_VIDEO_STATUS);
 		await boss.createQueue(JOB_NAMES.IMAGE_GENERATION_WORKFLOW);
+		await boss.createQueue(JOB_NAMES.AD_VIDEO_WORKFLOW);
 		
 		isStarted = true;
 		startPromise = null;

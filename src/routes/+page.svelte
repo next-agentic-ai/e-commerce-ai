@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { enhance } from '$app/forms';
 	import { deserialize } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
 	import { snackbar } from '$lib/stores/snackbar';
@@ -7,17 +6,16 @@
 
 	let { data } = $props();
 
-	let selectedSize = $state('9:16');
-	let selectedDuration = $state('12s_sd');
-	let selectedLanguage = $state('zh');
-	let selectedCount = $state(1);
 	let isGenerating = $state(false);
 
     // Generation Mode
-    let generationMode = $state<'video' | 'image'>('video');
+    let generationMode = $state<'image' | 'ad_video'>('ad_video');
     let imageGenerationCount = $state(1);
     let imageGenerationSize = $state('1:1');
     let imageGenerationLanguage = $state('zh');
+
+    // Ad Video Configuration
+    let adVideoAspectRatio = $state('9:16');
 
 	// Image Selection State
 	let showImageSelector = $state(false);
@@ -40,28 +38,10 @@
 	// 任务列表
 	let tasks = $derived((data as any)?.tasks || []);
 	
-	// Video Selection State
-	let showVideoSelector = $state(false);
-	let selectedVideoId = $state<string | null>(null);
-	let selectedVideoIds = $state<string[]>([]);
-	let activeVideoTab = $state('uploads');
-	let availableVideos = $state<MediaItem[]>([]);
-	
 	// Derived state to get the actual image objects for display
 	let selectedImages = $derived(
 		availableImages.filter((img: MediaItem) => selectedImageIds.includes(img.id))
 	);
-
-    // Derived video list based on tab
-    let displayedVideos = $derived(
-        activeVideoTab === 'uploads' 
-            ? availableVideos.filter(v => v.id.startsWith('vid-my')) 
-            : availableVideos.filter(v => v.id.startsWith('vid-pop'))
-    );
-
-    let selectedVideo = $derived(
-        availableVideos.find(v => v.id === selectedVideoId)
-    );
 
 	function handleOpenImageSelector() {
 		// 从服务器加载实际的产品图片
@@ -159,58 +139,13 @@
 		});
 	}
 
-    function handleOpenVideoSelector() {
-        if (availableVideos.length === 0) {
-             // Mock videos
-             const myUploads = Array.from({ length: 5 }).map((_, i) => ({
-                id: `vid-my-${i}`,
-                url: `https://picsum.photos/id/${i + 50}/300/300`,
-                name: `My Video ${i + 1}.mp4`,
-                type: 'video' as const,
-                thumbnail: `https://picsum.photos/id/${i + 50}/300/300`
-            }));
-            const popular = Array.from({ length: 8 }).map((_, i) => ({
-                id: `vid-pop-${i}`,
-                url: `https://picsum.photos/id/${i + 100}/300/300`,
-                name: `Viral Video ${i + 1}.mp4`,
-                type: 'video' as const,
-                thumbnail: `https://picsum.photos/id/${i + 100}/300/300`
-            }));
-            availableVideos = [...myUploads, ...popular];
-        }
-        showVideoSelector = true;
-    }
-
 	function handleImageSelection(ids: string[]) {
 		selectedImageIds = ids;
 	}
 
-    function handleVideoSelection(ids: string[]) {
-        if (ids.length > 0) {
-            selectedVideoId = ids[0];
-        }
-		selectedVideoIds = ids;
-    }
-
 	function removeImage(id: string) {
 		selectedImageIds = selectedImageIds.filter(i => i !== id);
 	}
-    
-    function removeVideo() {
-        selectedVideoId = null;
-    }
-
-	const sizes = [
-		{ id: '9:16', label: '竖屏 (9:16)' },
-		{ id: '16:9', label: '横屏 (16:9)' }
-	];
-
-	const durations = [
-		{ id: '12s_sd', label: '12s 标清' },
-		{ id: '12s_hd', label: '12s 高清' },
-		{ id: '24s_sd', label: '24s 标清' },
-		{ id: '24s_hd', label: '24s 高清' }
-	];
 
 	const languages = [
 		{ id: 'zh', label: '中文 (普通话)' },
@@ -223,6 +158,17 @@
 		{ id: 'ja', label: '日语' }
 	];
 
+	// 重置表单到默认状态
+	function resetForm() {
+		selectedImageIds = [];
+		// 图片生成默认值
+		imageGenerationCount = 1;
+		imageGenerationSize = '1:1';
+		imageGenerationLanguage = 'zh';
+		// 广告视频默认值
+		adVideoAspectRatio = '9:16';
+	}
+
 	// 生成视频/图片
 	async function handleGenerate() {
 		if (selectedImageIds.length === 0) {
@@ -233,24 +179,19 @@
 		isGenerating = true;
 
 		try {
-            if (generationMode === 'video') {
-                // 解析时长
-                const [durationStr] = selectedDuration.split('_');
-                const targetDuration = parseInt(durationStr.replace('s', ''));
+            if (generationMode === 'ad_video') {
+                // 广告视频生成逻辑
+                if (selectedImageIds.length !== 1) {
+                    alert('广告视频只支持上传1张产品图片');
+                    isGenerating = false;
+                    return;
+                }
 
                 const formData = new FormData();
                 formData.append('imageIds', JSON.stringify(selectedImageIds));
-                formData.append('targetDuration', targetDuration.toString());
-                formData.append('aspectRatio', selectedSize);
-                formData.append('language', selectedLanguage);
-                formData.append('videoCount', selectedCount.toString());
-                
-                if (selectedVideoId) {
-                    // TODO: 获取实际的视频URL
-                    formData.append('referenceVideoUrl', selectedVideoId);
-                }
+                formData.append('aspectRatio', adVideoAspectRatio);
 
-                const response = await fetch('?/generate', {
+                const response = await fetch('?/generateAdVideo', {
                     method: 'POST',
                     body: formData
                 });
@@ -260,8 +201,8 @@
                 if (result.type === 'success' && result.data) {
                     const actionData = result.data as any;
                     if (actionData.success) {
-                        snackbar.show('视频生成任务已创建！请在任务列表中查看进度', 'success');
-                        // 刷新任务列表
+                        snackbar.show('广告视频生成任务已创建！请在任务列表中查看进度', 'success');
+                        resetForm();
                         await invalidateAll();
                     } else {
                         alert(actionData.error || '创建任务失败');
@@ -289,7 +230,7 @@
                     const actionData = result.data as any;
                     if (actionData.success) {
                         snackbar.show('宣传图生成任务已创建！请在任务列表中查看进度', 'success');
-                        // 刷新任务列表
+                        resetForm();
                         await invalidateAll();
                     } else {
                         alert(actionData.error || '创建任务失败');
@@ -339,34 +280,36 @@
 	}
 
 	// 判断任务类型
-	function getTaskType(task: any): 'video' | 'image' {
-		return task.taskType || (task.videoCount !== undefined ? 'video' : 'image');
+	function getTaskType(task: any): 'image' | 'ad_video' {
+		return task.taskType || 'image';
 	}
 
 	// 获取任务结果URLs
 	function getTaskResultUrls(task: any): string[] {
-		if (getTaskType(task) === 'video' && task.videos?.length) {
-			return task.videos.map((v: any) => v.sourceVideoUrl || `/storage/${v.path}`).filter(Boolean);
-		}
-		if (getTaskType(task) === 'image' && task.images?.length) {
+		const type = getTaskType(task);
+		if (type === 'image' && task.images?.length) {
 			return task.images.map((img: any) => `/storage/${img.path}`).filter(Boolean);
+		}
+		if (type === 'ad_video' && task.adFinalVideos?.length) {
+			return task.adFinalVideos.map((v: any) => `/storage/${v.path}`).filter(Boolean);
 		}
 		return [];
 	}
 
 	// 查看生成结果
-	let previewDialog = $state<{ open: boolean; type: 'video' | 'image'; urls: string[] }>({
+	let previewDialog = $state<{ open: boolean; type: 'image' | 'ad_video'; urls: string[] }>({
 		open: false,
-		type: 'video',
+		type: 'ad_video',
 		urls: []
 	});
 
 	function handlePreview(task: any) {
 		const urls = getTaskResultUrls(task);
 		if (urls.length > 0) {
+			const taskType = getTaskType(task);
 			previewDialog = {
 				open: true,
-				type: getTaskType(task),
+				type: taskType,
 				urls
 			};
 		}
@@ -385,10 +328,10 @@
         <div class="flex border-b border-gray-200 sticky top-0 bg-white z-10">
             <button 
                 type="button"
-                class="flex-1 py-3 text-sm font-medium text-center transition-colors {generationMode === 'video' ? 'text-purple-600 border-b-2 border-purple-600' : 'text-gray-500 hover:text-gray-700'}"
-                onclick={() => generationMode = 'video'}
+                class="flex-1 py-3 text-sm font-medium text-center transition-colors {generationMode === 'ad_video' ? 'text-purple-600 border-b-2 border-purple-600' : 'text-gray-500 hover:text-gray-700'}"
+                onclick={() => generationMode = 'ad_video'}
             >
-                视频生成
+                广告视频
             </button>
             <button 
                 type="button"
@@ -406,9 +349,15 @@
 					<span class="text-sm font-medium text-gray-900">
 						<span class="text-red-500">*</span> 产品图片
 					</span>
-					<span class="text-xs text-gray-400">{selectedImages.length}/9</span>
+					<span class="text-xs text-gray-400">{selectedImages.length}/{generationMode === 'ad_video' ? 1 : 9}</span>
 				</div>
-				<p class="text-xs text-gray-500 mb-2">建议提交产品各个角度的图片，最多上传9张</p>
+				<p class="text-xs text-gray-500 mb-2">
+					{#if generationMode === 'ad_video'}
+						上传1张产品图片，系统将自动分析产品并生成广告视频
+					{:else}
+						建议提交产品各个角度的图片，最多上传9张
+					{/if}
+				</p>
 				<div class="grid grid-cols-3 gap-2">
 					<!-- Selected Images -->
 					{#each selectedImages as image (image.id)}
@@ -427,8 +376,8 @@
 						</div>
 					{/each}
 
-					<!-- Add Button (only if less than 9) -->
-					{#if selectedImages.length < 9}
+					<!-- Add Button (only if less than max) -->
+					{#if selectedImages.length < (generationMode === 'ad_video' ? 1 : 9)}
 						<button 
 							type="button"
 							aria-label="Select product image"
@@ -445,125 +394,43 @@
 				</div>
 			</div>
 
-			<!-- Reference Video -->
-            {#if generationMode === 'video'}
-			<div>
-				<span class="block text-sm font-medium text-gray-900 mb-2">
-					参考视频
-				</span>
-                
-				{#if selectedVideo}
-                    <div class="relative w-full rounded-lg overflow-hidden border border-gray-200 bg-black aspect-[16/9] group">
-                        <img src={selectedVideo.thumbnail || selectedVideo.url} alt={selectedVideo.name} class="w-full h-full object-cover opacity-80" />
-                        <div class="absolute inset-0 flex items-center justify-center">
-                            <div class="h-12 w-12 rounded-full bg-black/50 flex items-center justify-center backdrop-blur-sm">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="white" stroke="currentColor" stroke-width="0" stroke-linecap="round" stroke-linejoin="round" class="ml-1">
-                                    <polygon points="5 3 19 12 5 21 5 3" />
-                                </svg>
-                            </div>
-                        </div>
-                        <button
-                            type="button"
-                            aria-label="Remove video"
-                            onclick={removeVideo}
-                            class="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white opacity-0 transition-all hover:bg-black/80 group-hover:opacity-100 cursor-pointer"
-                        >
-                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M18 6 6 18"/><path d="M6 6 18 18"/>
-                            </svg>
-                        </button>
-                         <div class="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-3">
-                            <p class="text-sm font-medium text-white truncate">{selectedVideo.name}</p>
-                        </div>
-                    </div>
-                {:else}
-                    <button 
-                        type="button"
-                        onclick={handleOpenVideoSelector}
-                        class="w-full aspect-[16/9] flex flex-col items-center justify-center rounded-lg border border-dashed border-gray-300 bg-gray-50 hover:bg-gray-100 hover:border-gray-400 transition-colors cursor-pointer"
-                    >
-                        <!-- Clapperboard Icon -->
-                        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="text-gray-400 mb-2">
-                            <rect width="18" height="14" x="3" y="5" rx="2" ry="2" />
-                            <path d="M3 10h18" />
-                            <path d="m8 5 3 5" />
-                            <path d="m15 5 3 5" />
-                        </svg>
-                        <span class="text-sm text-gray-500">选择参考视频</span>
-                    </button>
-                {/if}
-			</div>
-            {/if}
-
 			<!-- Generation Configuration -->
 			<div>
 				<h3 class="text-sm font-bold text-gray-900 mb-3">生成配置</h3>
 				<div class="space-y-3">
-                    {#if generationMode === 'video'}
-					<div class="grid grid-cols-3 gap-3">
-						<!-- Size -->
-						<div>
-							<label for="size-select" class="block text-xs text-gray-500 mb-1">尺寸</label>
-							<div class="relative">
-								<select
-									id="size-select"
-									bind:value={selectedSize}
-									class="block w-full rounded-md border-gray-300 py-1.5 pl-3 pr-8 text-sm focus:border-purple-500 focus:outline-none focus:ring-purple-500 border appearance-none bg-none"
-								>
-									{#each sizes as size (size.id)}
-										<option value={size.id}>{size.label}</option>
-									{/each}
-								</select>
-								<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-500">
-									<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-									</svg>
-								</div>
-							</div>
-						</div>
-
-						<!-- Duration -->
-						<div>
-							<label for="duration-select" class="block text-xs text-gray-500 mb-1">时长/清晰度</label>
-							<div class="relative">
-								<select
-									id="duration-select"
-									bind:value={selectedDuration}
-									class="block w-full rounded-md border-gray-300 py-1.5 pl-3 pr-8 text-sm focus:border-purple-500 focus:outline-none focus:ring-purple-500 border appearance-none bg-none"
-								>
-									{#each durations as duration (duration.id)}
-										<option value={duration.id}>{duration.label}</option>
-									{/each}
-								</select>
-								<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-500">
-									<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-									</svg>
-								</div>
-							</div>
-						</div>
-
-						<!-- Language -->
-						<div>
-							<label for="language-select" class="block text-xs text-gray-500 mb-1">语言</label>
-							<div class="relative">
-								<select
-									id="language-select"
-									bind:value={selectedLanguage}
-									class="block w-full rounded-md border-gray-300 py-1.5 pl-3 pr-8 text-sm focus:border-purple-500 focus:outline-none focus:ring-purple-500 border appearance-none bg-none"
-								>
-									{#each languages as lang (lang.id)}
-										<option value={lang.id}>{lang.label}</option>
-									{/each}
-								</select>
-								<div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-500">
-									<svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-									</svg>
-								</div>
-							</div>
-						</div>
-					</div>
+                    {#if generationMode === 'ad_video'}
+                        <!-- Ad Video Configuration -->
+                        <div>
+                            <label for="ad-video-ratio-select" class="block text-xs text-gray-500 mb-1">视频比例</label>
+                            <div class="relative">
+                                <select
+                                    id="ad-video-ratio-select"
+                                    bind:value={adVideoAspectRatio}
+                                    class="block w-full rounded-md border-gray-300 py-1.5 pl-3 pr-8 text-sm focus:border-purple-500 focus:outline-none focus:ring-purple-500 border appearance-none bg-none"
+                                >
+                                    <option value="9:16">竖屏 (9:16)</option>
+                                    <option value="16:9">横屏 (16:9)</option>
+                                </select>
+                                <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-500">
+                                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                                    </svg>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Ad Video Workflow Description -->
+                        <div class="bg-purple-50 rounded-lg p-3 space-y-1.5">
+                            <p class="text-xs font-medium text-purple-700">广告视频生成流程</p>
+                            <div class="space-y-1 text-xs text-purple-600">
+                                <p>1. AI 分析产品特征</p>
+                                <p>2. 生成广告文案（标题 + 正文 + CTA）</p>
+                                <p>3. 设计4个连续分镜画面（每个2-4秒）</p>
+                                <p>4. 生成2×2分镜图并切分为4张关键帧</p>
+                                <p>5. 基于首帧生成4个视频片段</p>
+                                <p>6. TTS 语音合成 + 音视频合成</p>
+                            </div>
+                        </div>
                     {:else}
                          <!-- Image Configuration -->
                          <div class="grid grid-cols-2 gap-3">
@@ -609,21 +476,8 @@
                          </div>
                     {/if}
 
-					<!-- Quantity -->
-                    {#if generationMode === 'video'}
-					<div>
-						<label for="quantity-input" class="block text-xs text-gray-500 mb-1">数量</label>
-						<div class="relative">
-							<input
-								id="quantity-input"
-								type="number"
-								min="1"
-								bind:value={selectedCount}
-								class="block w-full rounded-md border-gray-300 py-1.5 pl-3 pr-3 text-sm focus:border-purple-500 focus:outline-none focus:ring-purple-500 border appearance-none"
-							/>
-						</div>
-					</div>
-                    {:else}
+					<!-- Quantity (for image mode only) -->
+                    {#if generationMode === 'image'}
 					<div>
 						<label for="image-quantity-input" class="block text-xs text-gray-500 mb-1">数量</label>
 						<div class="relative">
@@ -693,7 +547,7 @@
 					</svg>
 				</div>
 				<h3 class="text-lg font-medium text-gray-900 mb-1">暂无任务记录</h3>
-				<p class="text-gray-500">创建您的第一个AI视频生成任务</p>
+				<p class="text-gray-500">创建您的第一个AI生成任务</p>
 			</div>
 		{:else}
 			<div class="flex-1 overflow-y-auto p-6">
@@ -705,13 +559,15 @@
 								<div class="flex-1">
 									<div class="flex items-center gap-2 mb-1">
 										<!-- 任务类型标签 -->
-										<span class={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${taskType === 'video' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
-											{#if taskType === 'video'}
+										<span class={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${taskType === 'ad_video' ? 'bg-orange-100 text-orange-700' : 'bg-blue-100 text-blue-700'}`}>
+											{#if taskType === 'ad_video'}
 												<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-													<path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/>
-													<rect x="2" y="6" width="14" height="12" rx="2"/>
+													<rect width="18" height="14" x="3" y="5" rx="2" ry="2" />
+													<path d="M3 10h18" />
+													<path d="m8 5 3 5" />
+													<path d="m15 5 3 5" />
 												</svg>
-												视频
+												广告视频
 											{:else}
 												<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 													<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>
@@ -730,11 +586,9 @@
 									</div>
 									<div class="flex items-center gap-2 text-xs text-gray-500">
 										<span>{task.aspectRatio}</span>
-										{#if taskType === 'video'}
+										{#if taskType === 'ad_video'}
 											<span>•</span>
-											<span>{task.targetDuration}秒</span>
-											<span>•</span>
-											<span>{task.videoCount}个视频</span>
+											<span>广告视频</span>
 										{:else}
 											<span>•</span>
 											<span>{task.imageCount || 1}张图片</span>
@@ -757,7 +611,7 @@
 								{@const urls = getTaskResultUrls(task)}
 								{#if urls.length > 0}
 									<div class="mt-3">
-										{#if taskType === 'video'}
+										{#if taskType === 'ad_video'}
 											<div class="grid grid-cols-1 gap-3 max-w-md">
 												{#each urls as url}
 													<!-- svelte-ignore a11y_media_has_caption -->
@@ -814,8 +668,8 @@
 	bind:items={availableImages}
 	initialSelectedIds={selectedImageIds}
 	title="选择产品图片"
-	multiple={true}
-	maxSelect={9}
+	multiple={generationMode !== 'ad_video'}
+	maxSelect={generationMode === 'ad_video' ? 1 : 9}
 	accept="image/*"
 	canUpload={true}
 	canDelete={true}
@@ -824,32 +678,17 @@
 	onDelete={handleImageDelete}
 />
 
-<!-- Video Selector -->
-<MediaSelector 
-    bind:open={showVideoSelector}
-    bind:activeTab={activeVideoTab}
-    bind:items={displayedVideos}
-	initialSelectedIds={selectedVideoIds}
-    tabs={[
-        { value: 'uploads', label: '我上传的视频' },
-        { value: 'popular', label: '爆款视频' }
-    ]}
-    title="选择参考视频"
-    multiple={false}
-    canUpload={false}
-    canDelete={false}
-    onConfirm={handleVideoSelection}
-/>
-
 <!-- Preview Dialog -->
 {#if previewDialog.open}
 	<div 
 		role="dialog"
 		aria-modal="true"
+		tabindex="-1"
 		class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
 		onclick={closePreview}
 		onkeydown={(e) => e.key === 'Escape' && closePreview()}
 	>
+		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 		<div 
 			role="document"
 			class="relative bg-white rounded-lg shadow-xl max-w-5xl max-h-[90vh] overflow-hidden"
@@ -859,7 +698,7 @@
 			<!-- Header -->
 			<div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
 				<h3 class="text-lg font-bold text-gray-900">
-					{previewDialog.type === 'video' ? '视频预览' : '图片预览'}
+					{previewDialog.type === 'ad_video' ? '广告视频预览' : '图片预览'}
 				</h3>
 				<button 
 					type="button"
@@ -875,7 +714,7 @@
 
 			<!-- Content -->
 			<div class="p-6 overflow-y-auto max-h-[calc(90vh-80px)]">
-				{#if previewDialog.type === 'video'}
+				{#if previewDialog.type === 'ad_video'}
 					<div class="grid grid-cols-1 gap-4">
 						{#each previewDialog.urls as url, i (url)}
 							<div class="space-y-2">

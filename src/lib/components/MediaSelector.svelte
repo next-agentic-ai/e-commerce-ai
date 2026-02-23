@@ -123,18 +123,22 @@
 
 		const files = Array.from(input.files);
 		
+		// 判断是图片还是视频
+		const isVideo = files[0].type.startsWith('video/');
+		
 		// 验证文件数量
-		if (files.length > 9) {
-			alert('最多只能上传9张图片');
+		const maxFiles = isVideo ? 5 : 9;
+		if (files.length > maxFiles) {
+			alert(`最多只能上传${maxFiles}个${isVideo ? '视频' : '图片'}`);
 			input.value = '';
 			return;
 		}
 
 		// 验证文件大小
-		const maxSize = 5 * 1024 * 1024; // 5MB
+		const maxSize = isVideo ? 100 * 1024 * 1024 : 5 * 1024 * 1024; // 视频100MB, 图片5MB
 		for (const file of files) {
 			if (file.size > maxSize) {
-				alert(`文件 ${file.name} 超过5MB限制`);
+				alert(`文件 ${file.name} 超过${isVideo ? '100MB' : '5MB'}限制`);
 				input.value = '';
 				return;
 			}
@@ -147,8 +151,9 @@
 			id: `uploading-${Date.now()}-${index}`,
 			url: URL.createObjectURL(file), // 使用本地预览
 			name: file.name,
-			type: 'image' as const,
-			uploading: true
+			type: file.type.startsWith('video/') ? 'video' : 'image',
+			uploading: true,
+			thumbnail: URL.createObjectURL(file) // 对视频也使用相同的URL
 		}));
 
 		// 将占位符添加到列表最前面
@@ -159,11 +164,11 @@
 				// 上传文件
 				const newItems = await onUpload(files);
 				
-				if (newItems) {
+				if (newItems && newItems.length > 0) {
 					// 移除所有占位符
 					items = items.filter(item => !item.uploading);
 					
-					// 将上传成功的图片添加到最前面
+					// 将上传成功的文件添加到最前面
 					items = [...newItems, ...items];
 					
 					// 清理占位符的 blob URLs
@@ -194,7 +199,11 @@
 	async function handleDelete(id: string, event: Event, skipConfirm = false) {
 		event.stopPropagation(); // 阻止选择事件
 		
-		if (!skipConfirm && !confirm('确定要删除这张图片吗？')) {
+		// 找到要删除的项目
+		const itemToDelete = items.find(item => item.id === id);
+		const itemType = itemToDelete?.type === 'video' ? '视频' : '图片';
+		
+		if (!skipConfirm && !confirm(`确定要删除这个${itemType}吗？`)) {
 			return;
 		}
 
@@ -430,7 +439,20 @@
 							disabled={selectedIds.length === 0}
 							onclick={async () => {
 								if (selectedIds.length === 0) return;
-								if (!confirm(`确定要删除选中的 ${selectedIds.length} 张图片吗？`)) return;
+								
+								// 根据是否单选和文件类型显示不同的确认文字
+								let confirmMessage;
+								if (!multiple && selectedIds.length === 1) {
+									// 单选模式，找到选中的项
+									const selectedItem = items.find(item => item.id === selectedIds[0]);
+									const fileType = selectedItem?.type === 'video' ? '视频' : '图片';
+									confirmMessage = `确定要删除这个${fileType}吗？`;
+								} else {
+									// 多选模式
+									confirmMessage = `确定要删除选中的 ${selectedIds.length} 个文件吗？`;
+								}
+								
+								if (!confirm(confirmMessage)) return;
 								
 								for (const id of selectedIds) {
 									const fakeEvent = new Event('click');
@@ -445,7 +467,11 @@
 							<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="transition-colors {selectedIds.length > 0 ? 'text-gray-400 group-hover:text-red-500' : 'text-gray-300'}">
 								<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
 							</svg>
-							<span>删除 ({selectedIds.length})</span>
+							{#if multiple}
+								<span>删除 ({selectedIds.length})</span>
+							{:else}
+								<span>删除</span>
+							{/if}
 						</button>
 					{/if}
 				</div>
@@ -486,7 +512,13 @@
 						{#if item.type === 'video'}
 							<!-- Video Thumbnail -->
 							<div class="relative h-full w-full bg-gray-900">
-								<img src={item.thumbnail || item.url} alt={item.name} class="h-full w-full object-cover opacity-80" />
+								{#if item.uploading}
+									<!-- 上传中占位符 -->
+									<video src={item.url} class="h-full w-full object-cover opacity-30" muted></video>
+								{:else}
+									<!-- 使用video标签作为缩略图 -->
+									<video src={item.url} class="h-full w-full object-cover opacity-80" muted></video>
+								{/if}
 								<div class="absolute inset-0 flex items-center justify-center pointer-events-none">
 									<div class="flex h-10 w-10 items-center justify-center rounded-full bg-black/50 backdrop-blur-sm transition-transform group-hover:scale-110">
 										<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="white" stroke="currentColor" stroke-width="0" stroke-linecap="round" stroke-linejoin="round" class="ml-0.5">
@@ -497,6 +529,17 @@
 								<div class="absolute bottom-2 right-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white pointer-events-none">
 									VIDEO
 								</div>
+								
+								<!-- 上传中遮罩 -->
+								{#if item.uploading}
+									<div class="absolute inset-0 flex flex-col items-center justify-center bg-black/50 backdrop-blur-sm">
+										<svg class="h-8 w-8 animate-spin text-white mb-2" fill="none" viewBox="0 0 24 24">
+											<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+											<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+										</svg>
+										<span class="text-xs text-white font-medium">上传中...</span>
+									</div>
+								{/if}
 							</div>
 						{:else}
 							<!-- Image -->
@@ -516,8 +559,8 @@
 							
 							<!-- Action Buttons -->
 							<div class="absolute right-2 top-2 flex items-center gap-1 z-10">
-								{#if canDelete && activeTab !== 'popular' && !item.uploading}
-									<!-- Delete Button -->
+								{#if canDelete && activeTab !== 'popular' && !item.uploading && !(!multiple && selectedIds.includes(item.id))}
+									<!-- Delete Button (隐藏在单选模式下已选中的项) -->
 									<div
 										role="button"
 										tabindex="0"
@@ -531,7 +574,7 @@
 										class="flex h-6 w-6 items-center justify-center rounded-full bg-red-500 text-white opacity-0 transition-all hover:bg-red-600 group-hover:opacity-100 cursor-pointer"
 										class:opacity-50={deletingIds.has(item.id)}
 										class:pointer-events-none={deletingIds.has(item.id)}
-										aria-label="删除图片"
+										aria-label={`删除${item.type === 'video' ? '视频' : '图片'}`}
 									>
 										{#if deletingIds.has(item.id)}
 											<svg class="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">

@@ -1,11 +1,16 @@
 // src/lib/server/services/productAnalysis.ts
-import { GoogleGenAI } from '@google/genai';
+import { zodTextFormat } from 'openai/helpers/zod';
 import { z } from 'zod';
-import { db } from '../db/index.js';
-import { product, productImage, type GenerationTask } from '../db/schema.js';
-import { localStorage } from '../storage/local.js';
-import { inArray } from 'drizzle-orm';
-import { readFile } from 'fs/promises';
+import { db } from '../db';
+import { product, productImage, type GenerationTask } from '../db/schema';
+import { eq } from 'drizzle-orm';
+import { getArkClient } from './utils/apiClients';
+import { imageToBase64WithMime } from './utils/imageUtils';
+
+/**
+ * ARK 产品分析模型
+ */
+const ARK_PRODUCT_ANALYSIS_MODEL = 'doubao-seed-2-0-lite-260215';
 
 // 使用 Zod 定义产品分析结果的 Schema
 const ProductAnalysisSchema = z.object({
@@ -46,47 +51,7 @@ const ProductAnalysisSchema = z.object({
 export type ProductAnalysisResult = z.infer<typeof ProductAnalysisSchema>;
 
 /**
- * 初始化 Google Gemini 客户端
- */
-function getGeminiClient() {
-	const apiKey = process.env.GEMINI_API_KEY;
-	if (!apiKey) {
-		throw new Error('GEMINI_API_KEY environment variable is not set');
-	}
-	return new GoogleGenAI({ apiKey });
-}
-
-/**
- * 将图片转换为 base64
- */
-async function imageToBase64(imagePath: string): Promise<{ data: string; mimeType: string }> {
-	// 从本地存储获取完整路径
-	const fullPath = localStorage.getFullPath(imagePath);
-	const buffer = await readFile(fullPath);
-	
-	// 根据文件扩展名确定 MIME 类型
-	const ext = imagePath.split('.').pop()?.toLowerCase();
-	const mimeType = ext === 'png' ? 'image/png' : 
-	                 ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 
-	                 ext === 'webp' ? 'image/webp' : 
-	                 'image/jpeg';
-	
-	return {
-		data: buffer.toString('base64'),
-		mimeType
-	};
-}
-
-/**
- * 定义产品分析的 JSON Schema（从 Zod 转换）
- * 使用 Zod v4 原生的 z.toJSONSchema() 方法
- */
-const productAnalysisSchema = z.toJSONSchema(ProductAnalysisSchema, {
-	target: 'openapi-3.0',
-});
-
-/**
- * 使用 Google Gemini 分析产品图片（使用结构化输出 + Zod）
+ * 使用 ARK AI 分析产品图片（使用结构化输出 + Zod）
  */
 export async function analyzeProductImages(
 	task: GenerationTask
@@ -95,97 +60,97 @@ export async function analyzeProductImages(
 	usageMetadata: Record<string, unknown> | null;
 	model: string;
 }> {
-	const imageIds = task.productImageIds;
+	const imageId = task.productImageId;
 	
-	if (!imageIds || imageIds.length === 0) {
-		throw new Error('At least one image is required for product analysis');
+	if (!imageId) {
+		throw new Error('Product image ID is required for product analysis');
 	}
 
 	// 1. 获取图片信息
-	const images = await db
-		.select()
-		.from(productImage)
-		.where(inArray(productImage.id, imageIds));
+	const image = await db.query.productImage.findFirst({
+		where: eq(productImage.id, imageId)
+	});
 
-	if (images.length === 0) {
-		throw new Error('No images found');
+	if (!image) {
+		throw new Error('Product image not found');
 	}
 
 	// 2. 转换图片为 base64
-	const imageParts = await Promise.all(
-		images.map(async (img) => {
-			const { data, mimeType } = await imageToBase64(img.path);
-			return {
-				inlineData: {
-					data,
-					mimeType
-				}
-			};
-		})
-	);
+	const imageBase64List = [await imageToBase64WithMime(image.path)];
 
-	// 3. 构建分析提示词（简化版，因为结构化输出会保证格式）
-	const prompt = `请仔细分析这${images.length}张产品图片，提供详细的产品分析：
+	// 3. 构建分析提示词
+	const prompt = `请仔细分析这张产品图片，提供详细的产品分析：
 
 分析要求：
 1. name：产品名称
 2. description：产品简短描述（1-2句话）
 3. category：产品类别
-4. appearance：形状、颜色、材质、尺寸、设计特点
-5. functionality：主要功能、使用方法、独特卖点
-6. targetAudience：年龄段、性别、职业、生活方式
-7. usageScenario：地点、时机、环境
-8. emotionalPositioning：痛点、利益点、情感诉求
+4. appearance：包含形状、颜色（数组）、材质、尺寸、设计特点（数组）
+5. functionality：包含主要功能、使用方法、独特卖点（数组）
+6. targetAudience：包含年龄段、性别、职业、生活方式
+7. usageScenario：包含主要使用地点、使用时机、使用环境
+8. emotionalPositioning：包含痛点（数组）、利益点（数组）、情感诉求
 
 请根据图片内容提供准确、详细的分析结果。`;
 
+	// 4. 调用 ARK API（使用结构化输出）
+	const ark = getArkClient();
 
-	// 4. 调用 Gemini API（使用结构化输出）
-	const genAI = getGeminiClient();
-
-	// 构建 contents 参数：文本 + 图片
+	// 构建消息内容：文本 + 多张图片
 	const contentParts = [
-		{ text: prompt },
-		...imageParts
+		{
+			type: 'input_text' as const,
+			text: prompt
+		},
+		...imageBase64List.map(base64 => ({
+			type: 'input_image' as const,
+			detail: 'auto' as const,
+			image_url: base64
+		}))
 	];
 
-	const result = await genAI.models.generateContent({
-		model: 'gemini-3-flash-preview',
-		contents: contentParts,
-		config: {
-			responseMimeType: 'application/json',
-			responseJsonSchema: productAnalysisSchema
-		}
+	const response = await ark.responses.parse({
+		model: ARK_PRODUCT_ANALYSIS_MODEL,
+		input: [
+			{
+				role: 'user',
+				content: contentParts
+			}
+		],
+		text: {
+			format: zodTextFormat(ProductAnalysisSchema, "product_analysis"),
+		},
 	});
 
-	const text = result.text || '{}';
-
-	// 5. 使用 Zod 解析和验证 JSON 响应
-	let analysis: ProductAnalysisResult;
-	try {
-		const rawData = JSON.parse(text);
-		analysis = ProductAnalysisSchema.parse(rawData); // Zod 验证
-	} catch (error) {
-		console.error('Failed to parse or validate Gemini response:', text);
-		console.error('Validation error:', error);
-		throw new Error('Failed to parse product analysis result');
+	console.log('ARK Product Analysis Response:', response);
+	
+	// 5. 解析响应
+	if (!response.output_parsed) {
+		throw new Error('Failed to parse product analysis result from ARK response');
 	}
+	
+	const analysis = response.output_parsed;
 
-	// 6. 获取使用信息（保存所有字段，不限定结构）
-	const usageMetadata = result.usageMetadata ? { ...result.usageMetadata } : null;
+	// 6. 构建使用信息
+	const usageMetadata = {
+		totalTokens: response.usage?.total_tokens || 0,
+		inputTokens: response.usage?.input_tokens || 0,
+		outputTokens: response.usage?.output_tokens || 0,
+	};
 
 	return {
 		analysis,
 		usageMetadata,
-		model: 'gemini-3-flash-preview'
+		model: ARK_PRODUCT_ANALYSIS_MODEL
 	};
 }
 
 /**
  * 创建产品记录（包含分析结果）
+ * product 与 productImage 1:1 绑定，一张图片代表一个产品
  */
 export async function createProductFromAnalysis(
-	task: GenerationTask,
+	productImageId: string,
 	analysisResult: ProductAnalysisResult,
 	usageMetadata: Record<string, unknown> | null,
 	model: string
@@ -193,7 +158,7 @@ export async function createProductFromAnalysis(
 	const [inserted] = await db
 		.insert(product)
 		.values({
-			taskId: task.id,
+			productImageId,
 			name: analysisResult.name,
 			description: analysisResult.description,
 			category: analysisResult.category,
@@ -202,7 +167,7 @@ export async function createProductFromAnalysis(
 			targetAudience: analysisResult.targetAudience,
 			usageScenario: analysisResult.usageScenario,
 			emotionalPositioning: analysisResult.emotionalPositioning,
-			provider: 'google',
+			provider: 'bytedance',
 			model,
 			usageMetadata
 		})
@@ -213,13 +178,19 @@ export async function createProductFromAnalysis(
 
 /**
  * 分析并创建产品（一步到位）
+ * 使用 task.productImageId 作为产品图片ID（一张图片代表一个产品）
  */
 export async function analyzeAndCreateProduct(task: GenerationTask) {
+	const productImageId = task.productImageId;
+	if (!productImageId) {
+		throw new Error('No product image ID found in task');
+	}
+
 	// 1. 分析产品
 	const { analysis, usageMetadata, model } = await analyzeProductImages(task);
 
-	// 2. 创建产品记录
-	const productRecord = await createProductFromAnalysis(task, analysis, usageMetadata, model);
+	// 2. 创建产品记录（绑定到 productImage）
+	const productRecord = await createProductFromAnalysis(productImageId, analysis, usageMetadata, model);
 
 	return {
 		product: productRecord,

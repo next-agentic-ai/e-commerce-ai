@@ -17,8 +17,15 @@ export type VideoTaskStatus = 'queued' | 'running' | 'cancelled' | 'succeeded' |
 
 /**
  * 视频比例类型
+ * - 16:9: 横屏（宽屏）
+ * - 4:3: 横屏（传统）
+ * - 1:1: 正方形
+ * - 3:4: 竖屏
+ * - 9:16: 竖屏（短视频）
+ * - 21:9: 超宽屏
+ * - adaptive: 根据输入自动选择最合适的宽高比
  */
-export type VideoAspectRatio = '16:9' | '9:16' | '1:1' | '4:5';
+export type VideoAspectRatio = '16:9' | '4:3' | '1:1' | '3:4' | '9:16' | '21:9' | 'adaptive';
 
 /**
  * 内容项类型 - 文本
@@ -50,8 +57,9 @@ export type ContentItem = TextContent | ImageContent;
 export interface VideoGenerationRequest {
 	model: string;
 	content: ContentItem[];
-	ratio: VideoAspectRatio | 'adaptive';
+	ratio: VideoAspectRatio;
 	duration: number; // -1=自动决定长度, 4-6秒=指定时长
+	resolution?: '480p' | '720p' | '1080p'; // 视频分辨率，Seedance 1.0 pro & pro-fast 默认1080p，1080p不支持参考图场景
 	watermark?: boolean;
 	generate_audio?: boolean;
 	draft?: boolean; // Seedance 1.5 pro 样片模式（480p预览，消耗token更少）

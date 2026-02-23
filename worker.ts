@@ -33,7 +33,7 @@ function log(emoji: string, message: string, color = colors.reset) {
 
 // 验证必需的环境变量
 function validateEnvironment() {
-	const required = ['DATABASE_URL', 'GEMINI_API_KEY'];
+	const required = ['DATABASE_URL', 'GEMINI_API_KEY', 'ARK_API_KEY'];
 	const missing = required.filter(key => !process.env[key]);
 	
 	if (missing.length > 0) {
@@ -45,6 +45,7 @@ function validateEnvironment() {
 	log('✅', 'Environment variables loaded', colors.green);
 	log('📍', `DATABASE_URL: ${process.env.DATABASE_URL!.replace(/:[^:@]+@/, ':****@')}`, colors.cyan);
 	log('📍', `GEMINI_API_KEY: ${process.env.GEMINI_API_KEY!.substring(0, 10)}...`, colors.cyan);
+	log('📍', `ARK_API_KEY: ${process.env.ARK_API_KEY!.substring(0, 10)}...`, colors.cyan);
 }
 
 validateEnvironment();

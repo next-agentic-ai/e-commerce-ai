@@ -29,7 +29,8 @@ export class LocalStorage implements StorageProvider {
 		if (file instanceof Buffer) {
 			await writeFile(fullPath, file);
 		} else {
-			const buffer = Buffer.from(await file.arrayBuffer());
+			// File 对象有 arrayBuffer() 方法
+			const buffer = Buffer.from(await (file as File).arrayBuffer());
 			await writeFile(fullPath, buffer);
 		}
 

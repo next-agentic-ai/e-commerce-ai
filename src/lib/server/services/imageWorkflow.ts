@@ -4,10 +4,11 @@
  * 整合产品分析 -> 图片生成
  */
 
-import type { GenerationTask } from '../db/schema.js';
-import { analyzeAndCreateProduct } from './productAnalysis.js';
-import { generatePromotionalImages, type ImageGenerationResult } from './imageGeneration.js';
-import { updateTaskStatus } from './ugcTask.js';
+import type { GenerationTask } from '../db/schema';
+import { analyzeAndCreateProduct } from './productAnalysis';
+import { generatePromotionalImages, type ImageGenerationResult } from './imageGeneration';
+import { updateTaskStatus } from './ugcTask';
+import { extractErrorMessage, logError } from './utils/errorHandler';
 
 /**
  * 图片生成工作流状态
@@ -72,10 +73,10 @@ export async function executeImageGenerationWorkflow(
 			generatedCount: images.length
 		};
 	} catch (error) {
-		console.error('❌ Image generation workflow failed:', error);
+		logError('Image generation workflow', error);
 		
 		// 更新任务状态为失败
-		const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+		const errorMessage = extractErrorMessage(error);
 		await updateTaskStatus(task.id, 'failed', errorMessage);
 
 		return {
