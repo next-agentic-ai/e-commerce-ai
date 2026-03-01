@@ -43,3 +43,14 @@ export function checkArkApiKey(): string {
 	}
 	return apiKey;
 }
+
+/**
+ * 获取 Jamendo Client ID
+ */
+export function getJamendoClientId(): string {
+	const clientId = process.env.JAMENDO_CLIENT_ID;
+	if (!clientId) {
+		throw new Error('JAMENDO_CLIENT_ID environment variable is not set');
+	}
+	return clientId;
+}

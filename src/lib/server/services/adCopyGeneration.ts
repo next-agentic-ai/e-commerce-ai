@@ -18,7 +18,8 @@ const AdCopySchema = z.object({
 	style: z.string().describe('文案风格类型，如"对比反差型"、"场景叙事型"、"功能展示型"'),
 	title: z.string().describe('广告标题，简短有力'),
 	body: z.string().describe('广告正文，包含痛点描述和产品优势'),
-	cta: z.string().describe('结尾CTA（行动号召），引导用户行动')
+	cta: z.string().describe('结尾CTA（行动号召），引导用户行动'),
+	bgmTags: z.array(z.string()).min(2).max(4).describe('背景音乐风格标签（英文），2-4个标签，用于搜索匹配的BGM。从以下类别中选择：流派类(pop, rock, electronic, hiphop, jazz, classical, ambient, folk, rnb, reggae, latin, country, blues, metal, punk, soul, funk)、情绪类(energetic, chill, happy, sad, epic, romantic, dark, uplifting, dreamy, aggressive, peaceful, melancholic, groovy, funky)、场景类(cinematic, corporate, workout, travel, nature, party, lounge, meditation)')
 });
 
 export type AdCopyResult = z.infer<typeof AdCopySchema>;
@@ -56,6 +57,7 @@ export async function generateAdCopy(
 2. title：广告标题，简短有力，能抓住眼球
 3. body：广告正文，描述痛点和产品优势，语言生动有感染力
 4. cta：结尾CTA，引导用户采取行动
+5. bgmTags：背景音乐风格标签（英文），2-4个标签，用于搜索匹配的背景音乐。根据广告的情感基调和节奏选择合适的音乐风格标签。例如：活力运动类广告用 ["energetic", "rock"]，温馨家居类广告用 ["chill", "acoustic"]，科技感广告用 ["electronic", "cinematic"]，户外探险类广告用 ["epic", "folk"]。
 
 文案要有张力，有节奏感，能打动目标受众。参考以下示例的结构和语感：
 
@@ -133,6 +135,7 @@ ${result.cta}`;
 			body: result.body,
 			cta: result.cta,
 			fullText,
+			bgmTags: result.bgmTags,
 			provider: 'bytedance',
 			model,
 			usageMetadata

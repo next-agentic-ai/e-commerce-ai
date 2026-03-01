@@ -424,11 +424,11 @@
                             <p class="text-xs font-medium text-purple-700">广告视频生成流程</p>
                             <div class="space-y-1 text-xs text-purple-600">
                                 <p>1. AI 分析产品特征</p>
-                                <p>2. 生成广告文案（标题 + 正文 + CTA）</p>
+                                <p>2. 生成广告文案（标题 + 正文 + CTA + BGM风格标签）</p>
                                 <p>3. 设计4个连续分镜画面（每个2-4秒）</p>
                                 <p>4. 生成2×2分镜图并切分为4张关键帧</p>
                                 <p>5. 基于首帧生成4个视频片段</p>
-                                <p>6. TTS 语音合成 + 音视频合成</p>
+                                <p>6. TTS 语音合成 + BGM搜索下载 + 音视频合成</p>
                             </div>
                         </div>
                     {:else}

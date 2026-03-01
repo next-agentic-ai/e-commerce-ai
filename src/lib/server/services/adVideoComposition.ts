@@ -113,6 +113,7 @@ async function addSilentAudioTrack(
  * @param task - 生成任务
  * @param videoClips - 4个视频片段（按顺序排列）
  * @param audioSegments - 音频片段（可能少于4个，没有旁白的视频不会有对应音频）
+ * @param bgm - 可选的背景音乐信息
  * @returns 最终视频信息
  */
 export async function composeFinalAdVideo(
@@ -128,7 +129,11 @@ export async function composeFinalAdVideo(
 		audioId: string;
 		audioPath: string;
 		duration: number;
-	}>
+	}>,
+	bgm?: {
+		bgmId: string;
+		bgmPath: string;
+	}
 ): Promise<{
 	finalVideoId: string;
 	finalVideoPath: string;
@@ -197,30 +202,58 @@ export async function composeFinalAdVideo(
 	const fs = await import('fs/promises');
 	await fs.writeFile(concatFilePath, concatContent, 'utf-8');
 
-	const finalFilename = `final_${Date.now()}_${randomBytes(4).toString('hex')}.mp4`;
-	const finalPath = `${taskDir}/${finalFilename}`;
-	const fullFinalPath = localStorage.getFullPath(finalPath);
+	const concatFilename = `concat_${Date.now()}_${randomBytes(4).toString('hex')}.mp4`;
+	const concatVideoPath = `${taskDir}/${concatFilename}`;
+	const fullConcatPath = localStorage.getFullPath(concatVideoPath);
 
 	try {
 		await execAsync(
-			`ffmpeg -y -f concat -safe 0 -i "${concatFilePath}" -c copy "${fullFinalPath}"`
+			`ffmpeg -y -f concat -safe 0 -i "${concatFilePath}" -c copy "${fullConcatPath}"`
 		);
 	} finally {
 		await fs.unlink(concatFilePath).catch(() => {});
 	}
 
-	console.log(`✅ Final ad video created: ${finalPath}`);
+	console.log(`✅ Concatenated video created: ${concatVideoPath}`);
 
-	// 4. 获取最终视频元数据
+	// 4. 混入 BGM（如果有）
+	let outputVideoPath: string;
+
+	if (bgm) {
+		const bgmFullPath = localStorage.getFullPath(bgm.bgmPath);
+		const finalFilename = `final_${Date.now()}_${randomBytes(4).toString('hex')}.mp4`;
+		const finalPath = `${taskDir}/${finalFilename}`;
+		const fullFinalPath = localStorage.getFullPath(finalPath);
+
+		// 获取拼接后视频的时长
+		const videoDurationMs = await getVideoDuration(concatVideoPath);
+		const videoDurationSec = (videoDurationMs / 1000).toFixed(3);
+
+		// BGM 降低音量（-15dB），与原有旁白音频混合
+		// -filter_complex: 将 BGM 降低音量后与视频原音轨混合
+		// -t: 截断到视频时长（BGM 通常比视频长）
+		await execAsync(
+			`ffmpeg -y -i "${fullConcatPath}" -i "${bgmFullPath}" -filter_complex "[1:a]volume=0.15,aloop=loop=-1:size=2e+09[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]" -map 0:v -map "[aout]" -c:v copy -c:a aac -b:a 128k -t ${videoDurationSec} "${fullFinalPath}"`
+		);
+
+		console.log(`✅ BGM mixed into final video: ${finalPath}`);
+		outputVideoPath = finalPath;
+	} else {
+		outputVideoPath = concatVideoPath;
+	}
+
+	const fullFinalPath = localStorage.getFullPath(outputVideoPath);
+
+	// 5. 获取最终视频元数据
 	const metadata = await extractVideoMetadata(fullFinalPath);
 	const fileStats = await stat(fullFinalPath);
 
-	// 5. 保存到数据库
+	// 6. 保存到数据库
 	const [finalRecord] = await db
 		.insert(adFinalVideo)
 		.values({
 			taskId: task.id,
-			path: finalPath,
+			path: outputVideoPath,
 			storageType: 'local',
 			duration: metadata.duration,
 			width: metadata.width,
@@ -229,13 +262,14 @@ export async function composeFinalAdVideo(
 			clipCount: videoClips.length,
 			clipIds: videoClips.map(c => c.clipId),
 			audioIds: audioSegments.map(a => a.audioId),
-			totalGenerationTime: null // 会在工作流结束时计算
+			bgmId: bgm?.bgmId || null,
+			totalGenerationTime: null
 		})
 		.returning();
 
 	return {
 		finalVideoId: finalRecord.id,
-		finalVideoPath: finalPath,
+		finalVideoPath: outputVideoPath,
 		totalDuration: metadata.duration
 	};
 }

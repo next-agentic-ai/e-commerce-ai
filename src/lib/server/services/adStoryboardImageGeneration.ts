@@ -15,7 +15,21 @@ import { imagesToInlineData } from './utils/imageUtils';
 import { eq } from 'drizzle-orm';
 import type { StoryboardScene } from './adStoryboardGeneration';
 
-const IMAGE_MODEL = 'gemini-3-pro-image-preview';
+const IMAGE_MODEL = 'gemini-3.1-flash-image-preview';
+
+/**
+ * 将任务的 aspectRatio 映射到 Gemini imageConfig 支持的值
+ * Gemini 支持: "1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"
+ */
+function toGeminiAspectRatio(aspectRatio: string): string {
+	const mapping: Record<string, string> = {
+		'9:16': '9:16',
+		'16:9': '16:9',
+		'1:1': '1:1',
+		'4:5': '3:4'   // 4:5 不被 Gemini 支持，用最接近的 3:4
+	};
+	return mapping[aspectRatio] || '9:16';
+}
 
 /**
  * 获取产品参考图片（内联数据格式）
@@ -100,13 +114,15 @@ ${sceneDescriptions}
 	];
 
 	// 5. 调用 Gemini API
-	console.log('🎨 Generating 2x2 storyboard grid image...');
+	const geminiAspectRatio = toGeminiAspectRatio(aspectRatio);
+	console.log(`🎨 Generating 2x2 storyboard grid image (aspectRatio: ${aspectRatio} → ${geminiAspectRatio})...`);
 	const response = await ai.models.generateContent({
 		model: IMAGE_MODEL,
 		contents,
 		config: {
 			imageConfig: {
-				imageSize: '2K'
+				imageSize: '2K',
+				aspectRatio: geminiAspectRatio
 			},
 			responseModalities: ['Image']
 		}

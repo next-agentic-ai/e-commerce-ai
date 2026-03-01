@@ -14,7 +14,7 @@ import sharp from 'sharp';
 import { getGeminiClient } from './utils/apiClients';
 import { imagesToInlineData } from './utils/imageUtils';
 
-const IMAGE_MODEL = 'gemini-3-pro-image-preview';
+const IMAGE_MODEL = 'gemini-3.1-flash-image-preview';
 
 /**
  * 图片生成结果

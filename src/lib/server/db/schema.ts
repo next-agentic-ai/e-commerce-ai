@@ -231,6 +231,9 @@ export const adCopy = pgTable(
 		// 完整文案文本
 		fullText: text('full_text').notNull(),
 		
+		// BGM 标签（用于 Jamendo fuzzytags 搜索）
+		bgmTags: jsonb('bgm_tags').$type<string[]>(),
+		
 		// 生成信息
 		provider: providerEnum('provider'),
 		model: text('model'),
@@ -422,6 +425,48 @@ export const adAudio = pgTable(
 );
 
 // ============================================================
+// 广告BGM表（ad_video workflow - Jamendo背景音乐）
+// ============================================================
+
+export const adBgm = pgTable(
+	'ad_bgm',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		taskId: uuid('task_id')
+			.notNull()
+			.references(() => generationTask.id, { onDelete: 'cascade' }),
+		adCopyId: uuid('ad_copy_id')
+			.notNull()
+			.references(() => adCopy.id, { onDelete: 'cascade' }),
+		
+		// Jamendo 曲目信息
+		jamendoTrackId: text('jamendo_track_id').notNull(),
+		trackName: text('track_name').notNull(),
+		artistName: text('artist_name').notNull(),
+		albumName: text('album_name'),
+		
+		// 搜索参数
+		fuzzytags: text('fuzzytags').notNull(),
+		
+		// 音频文件
+		sourceUrl: text('source_url').notNull(),
+		path: text('path').notNull(),
+		storageType: storageTypeEnum('storage_type').notNull().default('local'),
+		duration: real('duration'), // 秒
+		fileSize: integer('file_size'),
+		
+		// 许可信息
+		license: text('license'),
+		
+		createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
+	},
+	(table) => [
+		index('idx_ad_bgm_task_id').on(table.taskId),
+		index('idx_ad_bgm_ad_copy_id').on(table.adCopyId)
+	]
+);
+
+// ============================================================
 // 广告最终视频表（ad_video workflow - 合成视频）
 // ============================================================
 
@@ -445,6 +490,7 @@ export const adFinalVideo = pgTable(
 		clipCount: integer('clip_count').notNull(),
 		clipIds: jsonb('clip_ids').$type<string[]>().notNull(),
 		audioIds: jsonb('audio_ids').$type<string[]>(),
+		bgmId: uuid('bgm_id').references(() => adBgm.id),
 		
 		// 统计信息
 		totalGenerationTime: integer('total_generation_time'),
@@ -493,6 +539,7 @@ export type AdStoryboard = typeof adStoryboard.$inferSelect;
 export type AdStoryboardImage = typeof adStoryboardImage.$inferSelect;
 export type AdVideoClip = typeof adVideoClip.$inferSelect;
 export type AdAudio = typeof adAudio.$inferSelect;
+export type AdBgm = typeof adBgm.$inferSelect;
 export type AdFinalVideo = typeof adFinalVideo.$inferSelect;
 
 // Insert类型（用于创建新记录）
@@ -506,4 +553,5 @@ export type NewAdStoryboard = typeof adStoryboard.$inferInsert;
 export type NewAdStoryboardImage = typeof adStoryboardImage.$inferInsert;
 export type NewAdVideoClip = typeof adVideoClip.$inferInsert;
 export type NewAdAudio = typeof adAudio.$inferInsert;
+export type NewAdBgm = typeof adBgm.$inferInsert;
 export type NewAdFinalVideo = typeof adFinalVideo.$inferInsert;

@@ -4,14 +4,15 @@
  * 
  * 流程：
  * 1. 分析产品（支持缓存复用：同一产品图片只分析一次）
- * 2. 生成广告文案（支持缓存复用：同一产品图片只生成一次，1:1绑定）
+ * 2. 生成广告文案（支持缓存复用：同一产品图片只生成一次，1:1绑定，含BGM标签）
  * 3. 检查该文案是否已有分镜，有则复用，没有则生成4个画面描述/分镜
  * 4. 生成2x2分镜网格图（Gemini，参考产品图片）
  * 5. 切分网格图为4张独立图片
  * 6. 基于首帧生成4个视频（Ark Seedance，静音，每个场景一个视频）
  * 7. TTS生成旁白音频并切分（跳过无旁白的场景）
  * 8. 音频与视频匹配（必要时加速音频，无旁白的视频保持静音）
- * 9. 合成最终广告视频
+ * 9. 搜索并下载BGM（Jamendo，基于文案生成的bgmTags）
+ * 10. 合成最终广告视频（旁白 + BGM混音）
  */
 
 import { db } from '../db';
@@ -24,6 +25,7 @@ import { generateAndSplitStoryboardImages } from './adStoryboardImageGeneration'
 import { createAdVideoTasks, batchUpdateAdVideoStatus, waitForAdVideosDownloaded } from './adVideoGeneration';
 import { generateFullNarrationAudio, splitAudioByScenes } from './adTtsService';
 import { composeFinalAdVideo } from './adVideoComposition';
+import { searchAndDownloadBgm } from './adBgmService';
 import { updateTaskStatus } from './ugcTask';
 import { extractErrorMessage, logError } from './utils/errorHandler';
 import type { VideoAspectRatio } from './videoGeneration.types';
@@ -55,6 +57,7 @@ export interface AdVideoWorkflowResult {
 	frameIds?: string[];
 	videoClipIds?: string[];
 	audioIds?: string[];
+	bgmId?: string;
 	finalVideoId?: string;
 	finalVideoPath?: string;
 	error?: string;
@@ -276,9 +279,24 @@ export async function executeAdVideoWorkflow(
 		console.log(`✅ Audio split into ${audioSegments.length} segments (some videos may be silent)`);
 
 		// ============================================
-		// Step 9: 合成最终广告视频
+		// Step 9: 搜索并下载 BGM（Jamendo）
 		// ============================================
-		console.log('\n🎬 Step 9: Composing final ad video...');
+		console.log('\n🎵 Step 9: Searching and downloading BGM...');
+
+		const totalVideoDuration = downloadedClips.reduce((sum, c) => sum + c.duration, 0);
+		let bgmInfo: { bgmId: string; bgmPath: string; trackName: string; artistName: string; duration: number } | undefined;
+
+		try {
+			bgmInfo = await searchAndDownloadBgm(task, selectedAdCopy, totalVideoDuration);
+			console.log(`✅ BGM ready: "${bgmInfo.trackName}" by ${bgmInfo.artistName} (${bgmInfo.duration}s)`);
+		} catch (error) {
+			console.warn(`⚠️ BGM search/download failed, proceeding without BGM:`, error instanceof Error ? error.message : error);
+		}
+
+		// ============================================
+		// Step 10: 合成最终广告视频（旁白 + BGM混音）
+		// ============================================
+		console.log('\n🎬 Step 10: Composing final ad video...');
 
 		// 准备视频片段数据（按 clipNumber 排序）
 		const videoClipsForComposition = downloadedClips
@@ -293,7 +311,8 @@ export async function executeAdVideoWorkflow(
 		const { finalVideoId, finalVideoPath, totalDuration } = await composeFinalAdVideo(
 			task,
 			videoClipsForComposition,
-			audioSegments
+			audioSegments,
+			bgmInfo ? { bgmId: bgmInfo.bgmId, bgmPath: bgmInfo.bgmPath } : undefined
 		);
 
 		// 更新任务状态为完成
@@ -313,6 +332,7 @@ export async function executeAdVideoWorkflow(
 			frameIds: frames.map(f => f.id),
 			videoClipIds,
 			audioIds: audioSegments.map(a => a.audioId),
+			bgmId: bgmInfo?.bgmId,
 			finalVideoId,
 			finalVideoPath
 		};
